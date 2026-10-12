@@ -1,4 +1,4 @@
-import { Component, Injector, Input, NgZone } from '@angular/core'
+import { Component, ElementRef, HostListener, Injector, Input, NgZone, ViewChild } from '@angular/core'
 import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
 import { auditTime } from 'rxjs'
 import {
@@ -9,10 +9,12 @@ import {
     ProfilesService,
     PromptModalComponent,
     RecoveryToken,
+    SelectorOption,
+    SelectorService,
 } from 'tabby-core'
 import { KubeObject, KubeProfile, KubeTerminalMode } from '../api'
 import { KubeCluster, toYaml } from '../kube/cluster'
-import { listCustomKinds } from '../kube/discovery'
+import { CUSTOM_SECTION, listCustomKinds } from '../kube/discovery'
 import { fetchNodeUsage, fetchPodUsage, hasUsage, Usage, usageColumns } from '../kube/metrics'
 import { canForward, forwardablePorts, PortForwarder } from '../kube/portForward'
 import { findKind, KubeColumn, KubeResourceKind, podContainers, podRestarts, RESOURCE_KINDS, Tone } from '../kube/resources'
@@ -20,6 +22,7 @@ import { ResourceWatcher } from '../kube/watcher'
 import { containerProfile } from '../profiles'
 import { PortForwardsService } from '../services/portForwards.service'
 import { YamlEditor } from '../yamlEditor'
+import { ContainerRequest, DetailsAction } from './kubeDetails.component'
 import { PortForwardChoice, PortForwardModalComponent } from './portForwardModal.component'
 
 /** Redraws at most this often while objects change */
@@ -90,7 +93,10 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     sortColumn = 'Name'
     sortDescending = false
     selectedUid: string|null = null
-    selectedYaml = ''
+    @ViewChild('filterInput') filterInput?: ElementRef<HTMLInputElement>
+    @ViewChild('tableWrap') tableWrap?: ElementRef<HTMLElement>
+    /** Brings the selected row into view once it is listed, after jumping to it */
+    private revealSelected = false
     private watcher: ResourceWatcher|null = null
     private ageTimer: ReturnType<typeof setInterval>|null = null
     private yamlEditor: YamlEditor
@@ -109,6 +115,7 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         private profiles: ProfilesService,
         private platform: PlatformService,
         public portForwards: PortForwardsService,
+        private selector: SelectorService,
     ) {
         super(injector)
         this.yamlEditor = new YamlEditor(() => this.cluster, platform, notifications)
@@ -350,8 +357,11 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         })
         this.rows = filtered
 
-        const selected = this.selected
-        this.selectedYaml = selected ? toYaml(this.kind, selected) : ''
+        if (this.revealSelected && this.selected) {
+            this.revealSelected = false
+            // After the rows are rendered
+            setTimeout(() => this.tableWrap?.nativeElement.querySelector('tr.selected')?.scrollIntoView({ block: 'center' }))
+        }
     }
 
     trackRow (_index: number, row: Row): string {
@@ -373,10 +383,6 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         return this.kind.id === 'pods'
     }
 
-    containersOf (pod: KubeObject): string[] {
-        return podContainers(pod)
-    }
-
     hasRestarted (pod: KubeObject): boolean {
         return podRestarts(pod) > 0
     }
@@ -390,6 +396,92 @@ export class KubeClusterTabComponent extends BaseTabComponent {
             mode,
             { previous },
         ))
+    }
+
+    onContainer (request: ContainerRequest): void {
+        this.openContainer(request.pod, request.container, request.mode, request.previous)
+    }
+
+    /** Shows a pod among all pods, from the pods of a workload, service or node */
+    goToPod (pod: KubeObject): void {
+        this.selectKind(findKind('pods')!)
+        if (this.namespace && this.namespace !== pod.metadata.namespace) {
+            this.selectNamespace(pod.metadata.namespace!)
+        }
+        this.filterText = ''
+        this.selectedUid = pod.metadata.uid
+        this.revealSelected = true
+    }
+
+    onAction (obj: KubeObject, action: DetailsAction): void {
+        const actions: Record<DetailsAction, (x: KubeObject) => Promise<void>> = {
+            edit: x => this.editYaml(x),
+            forward: x => this.portForward(x),
+            restart: x => this.restart(x),
+            scale: x => this.scale(x),
+            'delete': x => this.delete(x),
+        }
+        actions[action](obj)
+    }
+
+    // Quick navigation
+
+    /** Every kind, the custom ones included, to jump to by typing its name */
+    async pickKind (): Promise<void> {
+        const options: SelectorOption<void>[] = [
+            ...this.sections.flatMap(section => section.kinds.map(kind => ({
+                name: kind.title,
+                group: section.title,
+                callback: () => this.selectKind(kind),
+            }))),
+            {
+                name: 'Port forwards',
+                group: 'Network',
+                callback: () => this.showPortForwards(),
+            },
+            ...this.customGroups.flatMap(group => group.kinds.map(kind => ({
+                name: kind.title,
+                description: kind.group,
+                group: CUSTOM_SECTION,
+                callback: () => {
+                    this.expandGroupOf(kind)
+                    this.selectKind(kind)
+                },
+            }))),
+        ]
+        await this.selector.show('Show resources', options).catch(() => null)
+    }
+
+    async pickNamespace (): Promise<void> {
+        const options: SelectorOption<void>[] = [
+            { name: 'All namespaces', icon: 'fas fa-asterisk', callback: () => this.selectNamespace('') },
+            ...(this.namespaces ?? []).map(ns => ({
+                name: ns,
+                icon: ns === this.namespace ? 'fas fa-check' : undefined,
+                callback: () => this.selectNamespace(ns),
+            })),
+            // Typed in, for credentials that may not list namespaces
+            { name: 'Namespace', freeInputPattern: 'Namespace "%s"', icon: 'fas fa-pen', callback: (text?: string) => this.selectNamespace(text ?? '') },
+        ]
+        await this.selector.show('Switch namespace', options).catch(() => null)
+    }
+
+    /** ":" for kinds, "/" for the filter, Escape to close the details - while no field has focus */
+    @HostListener('document:keydown', ['$event'])
+    onKeyDown (event: KeyboardEvent): void {
+        const target = event.target as HTMLElement|null
+        if (!this.hasFocus || event.ctrlKey || event.altKey || event.metaKey || target?.closest('input, textarea, select, ngb-modal-window')) {
+            return
+        }
+        if (event.key === ':') {
+            event.preventDefault()
+            this.pickKind()
+        } else if (event.key === '/') {
+            event.preventDefault()
+            this.filterInput?.nativeElement.focus()
+        } else if (event.key === 'Escape' && this.selectedUid) {
+            this.closeDetails()
+        }
     }
 
     showContextMenu (row: Row, event: MouseEvent): void {

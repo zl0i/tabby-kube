@@ -25,8 +25,9 @@
 
         .input-group.input-group-sm.filter.ms-2
             input.form-control(
+                #filterInput,
                 type='text',
-                placeholder='Filter...',
+                placeholder='Filter...  ( / )',
                 [(ngModel)]='filterText',
                 (input)='onFilterChange()',
                 (keydown.escape)='clearFilter()'
@@ -106,7 +107,7 @@
     .content(*ngIf='view === "resources"')
         .alert.alert-warning.mx-3.mt-2.mb-0(*ngIf='watchError') {{watchError}}
         .m-3(*ngIf='loading && !watchError', translate) Loading
-        .table-wrap(*ngIf='!loading')
+        .table-wrap(*ngIf='!loading', #tableWrap)
             table.table.table-sm.table-hover
                 thead
                     tr
@@ -135,42 +136,12 @@
                 span(*ngIf='!totalCount', translate) There is nothing here
 
     .details(*ngIf='view === "resources" && selected')
-        .details-header
-            strong.me-auto {{selected.metadata.name}}
-            button.btn.btn-link.btn-sm((click)='closeDetails()', title='Close')
-                i.fas.fa-times
-
-        .actions
-            ng-container(*ngIf='isPods')
-                .container-row(*ngFor='let c of containersOf(selected)')
-                    .container-name {{c}}
-                    button.btn.btn-secondary.btn-sm((click)='openContainer(selected, c, "shell")')
-                        i.fas.fa-terminal.me-1
-                        span(translate) Shell
-                    button.btn.btn-secondary.btn-sm((click)='openContainer(selected, c, "logs")')
-                        i.fas.fa-stream.me-1
-                        span(translate) Logs
-                    button.btn.btn-secondary.btn-sm(
-                        *ngIf='hasRestarted(selected)',
-                        (click)='openContainer(selected, c, "logs", true)',
-                        title='Logs of the previous instance'
-                    )
-                        i.fas.fa-history
-            .buttons
-                button.btn.btn-secondary.btn-sm((click)='editYaml(selected)')
-                    i.fas.fa-pen.me-1
-                    span(translate) Edit
-                button.btn.btn-secondary.btn-sm(*ngIf='canForward()', (click)='portForward(selected)')
-                    i.fas.fa-plug.me-1
-                    span(translate) Forward
-                button.btn.btn-secondary.btn-sm(*ngIf='kind.restartable', (click)='restart(selected)')
-                    i.fas.fa-redo.me-1
-                    span(translate) Restart
-                button.btn.btn-secondary.btn-sm(*ngIf='kind.scalable', (click)='scale(selected)')
-                    i.fas.fa-arrows-alt-v.me-1
-                    span(translate) Scale
-                button.btn.btn-danger.btn-sm((click)='delete(selected)')
-                    i.fas.fa-trash-alt.me-1
-                    span(translate) Delete
-
-        pre.yaml {{selectedYaml}}
+        kube-details(
+            [cluster]='cluster',
+            [kind]='kind',
+            [obj]='selected',
+            (container)='onContainer($event)',
+            (goToPod)='goToPod($event)',
+            (action)='onAction(selected, $event)',
+            (closed)='closeDetails()'
+        )

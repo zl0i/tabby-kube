@@ -12,6 +12,7 @@ import { KubeCluster } from '../src/kube/cluster'
 import { listCustomKinds } from '../src/kube/discovery'
 import { KubeApiError } from '../src/kube/http'
 import { fetchNodeUsage, fetchPodUsage } from '../src/kube/metrics'
+import { eventsQuery, relatedPodsQuery } from '../src/kube/related'
 import { PortForwarder } from '../src/kube/portForward'
 import { findKind, podStatus } from '../src/kube/resources'
 import { ResourceWatcher } from '../src/kube/watcher'
@@ -207,5 +208,38 @@ describe('a real cluster', { skip: !context && 'KUBE_TEST_CONTEXT is not set' },
         assert.ok([...nodes.values()].every(x => x.cpu > 0 && x.memory > 0))
         const pods = await fetchPodUsage(cluster.kc, 'kube-system')
         assert.ok(pods && [...pods.keys()].every(x => x.startsWith('kube-system/')))
+    })
+
+    async function loaded (collection: ResourceWatcher): Promise<ResourceWatcher> {
+        await waitFor(() => collection.loaded || !!collection.error)
+        collection.stop()
+        assert.equal(collection.error, null)
+        return collection
+    }
+
+    test('finds the pods of a service and of a node', async () => {
+        const service = await cluster.read(findKind('services')!, { metadata: { name: 'kube-dns', namespace: 'kube-system', uid: '' } })
+        const pods = await loaded(cluster.watch(findKind('pods')!, relatedPodsQuery(findKind('services')!, service)!))
+        assert.ok(pods.items.length > 0)
+        assert.ok(pods.items.every(x => x.metadata.labels?.['k8s-app'] === 'kube-dns'))
+
+        const nodeName = pods.items[0].spec.nodeName
+        const node = await cluster.read(findKind('nodes')!, { metadata: { name: nodeName, uid: '' } })
+        const onNode = await loaded(cluster.watch(findKind('pods')!, relatedPodsQuery(findKind('nodes')!, node)!))
+        assert.ok(onNode.items.some(x => x.metadata.uid === pods.items[0].metadata.uid))
+        assert.ok(onNode.items.every(x => x.spec.nodeName === nodeName))
+    })
+
+    test('lists the events about an object only', async () => {
+        const all = await loaded(cluster.watch(findKind('events')!, null))
+        const event = all.items.find(x => x.involvedObject?.uid && x.involvedObject?.namespace)
+        if (!event) {
+            return
+        }
+        const about = await loaded(cluster.watch(findKind('events')!, eventsQuery(findKind('pods')!, {
+            metadata: { name: event.involvedObject.name, namespace: event.involvedObject.namespace, uid: event.involvedObject.uid },
+        })))
+        assert.ok(about.items.length > 0)
+        assert.ok(about.items.every(x => x.involvedObject.uid === event.involvedObject.uid))
     })
 })

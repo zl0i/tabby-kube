@@ -3,6 +3,7 @@ import { Observable, Subject } from 'rxjs'
 import { KubeConfig } from '@kubernetes/client-node'
 import { KubeObject } from '../api'
 import { kubeJson, kubeRequest } from './http'
+import { KubeQuery } from './related'
 import { KubeResourceKind, resourcePath } from './resources'
 
 const RETRY_DELAY = 5000
@@ -40,8 +41,7 @@ export class ResourceWatcher {
     constructor (
         private kc: KubeConfig,
         public readonly kind: KubeResourceKind,
-        /** Null means all namespaces */
-        public readonly namespace: string|null,
+        public readonly query: KubeQuery,
     ) { }
 
     start (): void {
@@ -58,14 +58,18 @@ export class ResourceWatcher {
     }
 
     private get path (): string {
-        return resourcePath(this.kind, this.namespace)
+        return resourcePath(this.kind, this.query.namespace)
+    }
+
+    private get selectors (): Record<string, string|undefined> {
+        return { labelSelector: this.query.labelSelector, fieldSelector: this.query.fieldSelector }
     }
 
     private async list (): Promise<void> {
         this.abort = new AbortController()
         try {
             const list = await kubeJson<{ items: KubeObject[], metadata: { resourceVersion: string } }>(
-                this.kc, 'GET', this.path, { signal: this.abort.signal },
+                this.kc, 'GET', this.path, { query: this.selectors, signal: this.abort.signal },
             )
             if (this.stopped) {
                 return
@@ -88,6 +92,7 @@ export class ResourceWatcher {
         try {
             const response = await kubeRequest(this.kc, 'GET', this.path, {
                 query: {
+                    ...this.selectors,
                     watch: true,
                     resourceVersion: this.resourceVersion,
                     allowWatchBookmarks: true,

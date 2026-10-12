@@ -2,10 +2,12 @@ import { NgModule } from '@angular/core'
 import { CommonModule } from '@angular/common'
 import { FormsModule } from '@angular/forms'
 import { NgbModule } from '@ng-bootstrap/ng-bootstrap'
-import TabbyCoreModule, { ProfileProvider, TabRecoveryProvider } from 'tabby-core'
+import TabbyCoreModule, { CommandProvider, ProfileProvider, TabRecoveryProvider } from 'tabby-core'
 import TabbyTerminalModule from 'tabby-terminal'
 
+import { KubeCommandProvider } from './commands'
 import { KubeClusterTabComponent } from './components/kubeClusterTab.component'
+import { KubeDetailsComponent } from './components/kubeDetails.component'
 import { KubeProfileSettingsComponent } from './components/kubeProfileSettings.component'
 import { KubeTerminalTabComponent } from './components/kubeTerminalTab.component'
 import { PortForwardModalComponent } from './components/portForwardModal.component'
@@ -25,9 +27,11 @@ import { RecoveryProvider } from './recoveryProvider'
         { provide: ProfileProvider, useExisting: KubeProfilesService, multi: true },
         { provide: ProfileProvider, useExisting: KubeTerminalProfilesService, multi: true },
         { provide: TabRecoveryProvider, useClass: RecoveryProvider, multi: true },
+        { provide: CommandProvider, useClass: KubeCommandProvider, multi: true },
     ],
     declarations: [
         KubeClusterTabComponent,
+        KubeDetailsComponent,
         KubeProfileSettingsComponent,
         KubeTerminalTabComponent,
         PortForwardModalComponent,

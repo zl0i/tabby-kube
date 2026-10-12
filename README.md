@@ -9,7 +9,8 @@ Kubernetes cluster browser for [Tabby](https://tabby.sh), in the spirit of Lens:
 - **Custom resources**: every CRD of the cluster, grouped by API group, with the columns its definition declares - as `kubectl get` shows them
 - **CPU and memory** of pods and nodes (nodes also as a share of what they can allocate), when the cluster runs metrics-server
 - **One namespace or all**, a filter over every column, sorting by any column
-- **Details**: the object as YAML, next to the table
+- **Details** next to the table, as `kubectl describe` tells them and kept live: the main properties, containers with their states, conditions, the pods a workload, service or node runs (click one to go to it), labels, annotations, data of config maps and secrets (hidden until shown, copied decoded), and the events about the object. Its YAML on a tab of its own
+- **Quick navigation**: `:` picks a kind of resources by typing its name, `/` jumps to the filter, Escape closes the details. Tabby's command palette has *Kubernetes: show resources…* and *Kubernetes: switch namespace…*
 - **Shell** into any container (bash where the image has it, sh otherwise) and **logs**, followed, including those of the previous instance of a restarted container - in terminal tabs, with Tabby's search, splits, copying and color schemes
 - **Port forwarding** to pods, services, deployments, stateful sets and daemon sets - through a pod the service or workload selects, as kubectl does, and through the next one when that pod goes away. The forwards stay up while Tabby runs, listed under Network → Port forwards
 - **Edit YAML** in the app your OS opens `.yaml` files with: each save is applied to the cluster, and refused when the object has changed there in the meantime

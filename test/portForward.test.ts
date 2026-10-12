@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { KubeObject } from '../src/api'
-import { forwardablePorts, labelSelector, pickPod, servicePortInPod } from '../src/kube/portForward'
+import { forwardablePorts, pickPod, servicePortInPod } from '../src/kube/portForward'
 import { findKind } from '../src/kube/resources'
 import { checkEdited } from '../src/yamlEditor'
 
@@ -21,11 +21,6 @@ test('forwardablePorts lists TCP ports of containers, templates and services', (
         spec: { ports: [{ port: 80, name: 'http', targetPort: 'http' }, { port: 53, protocol: 'UDP' }] },
     })), [{ port: 80, name: 'http' }])
     assert.deepEqual(forwardablePorts(findKind('pods')!, obj('bare')), [])
-})
-
-test('labelSelector joins labels', () => {
-    assert.equal(labelSelector({ app: 'web', tier: 'front' }), 'app=web,tier=front')
-    assert.equal(labelSelector(undefined), '')
 })
 
 test('pickPod prefers a ready running pod', () => {

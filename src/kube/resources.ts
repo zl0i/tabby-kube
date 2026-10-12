@@ -135,7 +135,7 @@ export function podRestarts (pod: KubeObject): number {
     return (pod.status?.containerStatuses ?? []).reduce((sum: number, c: any) => sum + (c.restartCount ?? 0), 0)
 }
 
-function podTone (pod: KubeObject): Tone {
+export function podTone (pod: KubeObject): Tone {
     const status = podStatus(pod)
     if (status === 'Completed' || status === 'Succeeded') {
         return 'muted'

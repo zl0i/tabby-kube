@@ -1,0 +1,130 @@
+.details-header
+    .title
+        strong {{obj.metadata.name}}
+        .subtitle
+            span {{kind.kind}}
+            span(*ngIf='obj.metadata.namespace')  · {{obj.metadata.namespace}}
+    button.btn.btn-link.btn-sm((click)='closed.emit()', title='Close')
+        i.fas.fa-times
+
+.toolbar
+    .tabs
+        a([class.active]='tab === "overview"', (click)='tab = "overview"', translate) Overview
+        a([class.active]='tab === "yaml"', (click)='tab = "yaml"') YAML
+    .flex-grow-1
+    button.btn.btn-link.btn-sm((click)='action.emit("edit")', title='Edit YAML')
+        i.fas.fa-pen
+    button.btn.btn-link.btn-sm(*ngIf='canForward', (click)='action.emit("forward")', title='Port forward')
+        i.fas.fa-plug
+    button.btn.btn-link.btn-sm(*ngIf='kind.restartable', (click)='action.emit("restart")', title='Restart')
+        i.fas.fa-redo
+    button.btn.btn-link.btn-sm(*ngIf='kind.scalable', (click)='action.emit("scale")', title='Scale')
+        i.fas.fa-arrows-alt-v
+    button.btn.btn-link.btn-sm.text-danger((click)='action.emit("delete")', title='Delete')
+        i.fas.fa-trash-alt
+
+pre.yaml(*ngIf='tab === "yaml"') {{yaml}}
+
+.body(*ngIf='tab === "overview"')
+    table.properties(*ngIf='properties.length')
+        tr(*ngFor='let p of properties')
+            th {{p[0]}}
+            td {{p[1]}}
+
+    section(*ngIf='containers.length')
+        h6(translate) Containers
+        .container-card(*ngFor='let c of containers')
+            .d-flex.align-items-center
+                strong.me-2 {{c.name}}
+                span.badge.bg-secondary.me-2(*ngIf='c.init') init
+                span.state([attr.data-tone]='c.tone') {{c.state}}
+                .flex-grow-1
+                button.btn.btn-link.btn-sm((click)='openContainer(c.name, "shell")', title='Shell')
+                    i.fas.fa-terminal
+                button.btn.btn-link.btn-sm((click)='openContainer(c.name, "logs")', title='Logs')
+                    i.fas.fa-stream
+                button.btn.btn-link.btn-sm(
+                    *ngIf='c.restarts',
+                    (click)='openContainer(c.name, "logs", true)',
+                    title='Logs of the previous instance'
+                )
+                    i.fas.fa-history
+            .meta
+                div([title]='c.image') {{c.image}}
+                div(*ngIf='c.restarts || c.ports')
+                    span(*ngIf='c.restarts') {{c.restarts}} restarts
+                    span(*ngIf='c.restarts && c.ports') &nbsp;·&nbsp;
+                    span(*ngIf='c.ports') {{c.ports}}
+
+    section(*ngIf='pods !== null')
+        h6
+            span(translate) Pods
+            span.count  {{pods.length}}
+        table.list(*ngIf='pods.length')
+            tr(*ngFor='let pod of pods')
+                td.name
+                    a((click)='goToPod.emit(pod)', [title]='pod.metadata.name') {{pod.metadata.name}}
+                td([attr.data-tone]='podTone(pod)') {{podStatus(pod)}}
+                td {{podReady(pod)}}
+                td
+                    span(*ngIf='podRestarts(pod)', title='Restarts') ↻{{podRestarts(pod)}}
+                td.nowrap
+                    button.btn.btn-link.btn-sm((click)='openPod(pod, "shell")', title='Shell')
+                        i.fas.fa-terminal
+                    button.btn.btn-link.btn-sm((click)='openPod(pod, "logs")', title='Logs')
+                        i.fas.fa-stream
+        .text-muted.small(*ngIf='!pods.length', translate) No pods
+
+    section(*ngIf='conditions.length')
+        h6(translate) Conditions
+        table.list
+            tr(*ngFor='let c of conditions', [title]='c.message')
+                td {{c.type}}
+                td([attr.data-tone]='c.tone') {{c.status}}
+                td.muted {{c.reason}}
+                td.muted.nowrap {{c.age}}
+
+    section(*ngIf='data.length')
+        h6(translate) Data
+        .data-entry(*ngFor='let entry of data')
+            .d-flex.align-items-center
+                strong.me-auto {{entry.key}}
+                button.btn.btn-link.btn-sm(
+                    *ngIf='entry.secret',
+                    (click)='toggleReveal(entry)',
+                    [title]='revealed.has(entry.key) ? "Hide" : "Show"'
+                )
+                    i.fas([class.fa-eye]='!revealed.has(entry.key)', [class.fa-eye-slash]='revealed.has(entry.key)')
+                button.btn.btn-link.btn-sm((click)='copy(entry.value)', title='Copy the value')
+                    i.far.fa-copy
+            pre(*ngIf='!entry.secret || revealed.has(entry.key)') {{entry.value}}
+            .hidden-value(*ngIf='entry.secret && !revealed.has(entry.key)') ••••••••
+
+    section(*ngIf='labels.length')
+        h6(translate) Labels
+        .chips
+            span.chip(*ngFor='let l of labels', [title]='l[0] + "=" + l[1]') {{l[0]}}={{l[1]}}
+
+    section(*ngIf='annotations.length')
+        h6
+            a.toggle((click)='showAnnotations = !showAnnotations')
+                i.fas.fa-fw([class.fa-caret-right]='!showAnnotations', [class.fa-caret-down]='showAnnotations')
+                span(translate) Annotations
+                span.count  {{annotations.length}}
+        table.properties(*ngIf='showAnnotations')
+            tr(*ngFor='let a of annotations')
+                th([title]='a[0]') {{a[0]}}
+                td {{a[1]}}
+
+    section
+        h6
+            span(translate) Events
+            span.count(*ngIf='events.length')  {{events.length}}
+        .event(*ngFor='let e of events')
+            .d-flex
+                strong.me-2([attr.data-tone]='e.type === "Warning" ? "warning" : null') {{e.reason}}
+                span.muted(*ngIf='e.count > 1') ×{{e.count}}
+                .flex-grow-1
+                span.muted {{eventAge(e)}}
+            .message {{e.message ?? e.note}}
+        .text-muted.small(*ngIf='!events.length', translate) No recent events

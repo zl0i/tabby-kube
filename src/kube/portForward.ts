@@ -4,6 +4,7 @@ import WebSocket from 'ws'
 import { KubeConfig } from '@kubernetes/client-node'
 import { KubeObject } from '../api'
 import { KubeApiError, kubeJson } from './http'
+import { relatedPodsQuery } from './related'
 import { findKind, KubeResourceKind, podReady, resourcePath } from './resources'
 
 /** Kinds whose objects lead to pods to forward to */
@@ -38,10 +39,6 @@ export function forwardablePorts (kind: KubeResourceKind, obj: KubeObject): Forw
         default:
             return containerPorts(obj.spec?.template?.spec)
     }
-}
-
-export function labelSelector (matchLabels: Record<string, string>|undefined): string {
-    return Object.entries(matchLabels ?? {}).map(([k, v]) => `${k}=${v}`).join(',')
 }
 
 /** The pod to forward to among those of a service or workload: a ready one, as kubectl picks */
@@ -84,12 +81,12 @@ export async function resolveTarget (kc: KubeConfig, target: PortForwardTarget):
         return { pod: target.name, port: target.port }
     }
     const obj = await kubeJson<KubeObject>(kc, 'GET', resourcePath(target.kind, target.namespace, target.name))
-    const selector = target.kind.id === 'services' ? obj.spec?.selector : obj.spec?.selector?.matchLabels
-    if (!selector || !Object.keys(selector).length) {
+    const query = relatedPodsQuery(target.kind, obj)
+    if (!query) {
         throw new Error(`${target.kind.kind} ${target.name} selects no pods`)
     }
     const pods = await kubeJson<{ items: KubeObject[] }>(kc, 'GET', resourcePath(findKind('pods')!, target.namespace), {
-        query: { labelSelector: labelSelector(selector) },
+        query: { labelSelector: query.labelSelector },
     })
     const pod = pickPod(pods.items)
     if (!pod) {

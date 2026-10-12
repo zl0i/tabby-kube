@@ -3,6 +3,7 @@ import { KubeConfig } from '@kubernetes/client-node'
 import { KubeObject, KubeTarget } from '../api'
 import { loadKubeConfig } from './config'
 import { KubeApiError, kubeJson } from './http'
+import { KubeQuery } from './related'
 import { findKind, KubeResourceKind, resourcePath } from './resources'
 import { ResourceWatcher } from './watcher'
 
@@ -42,8 +43,9 @@ export class KubeCluster {
         }
     }
 
-    watch (kind: KubeResourceKind, namespace: string|null): ResourceWatcher {
-        const watcher = new ResourceWatcher(this.kc, kind, namespace)
+    /** A live collection: of a namespace (null: all of them), or narrowed further by selectors */
+    watch (kind: KubeResourceKind, query: KubeQuery|string|null): ResourceWatcher {
+        const watcher = new ResourceWatcher(this.kc, kind, typeof query === 'object' && query !== null ? query : { namespace: query })
         watcher.start()
         return watcher
     }

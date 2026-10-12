@@ -187,52 +187,9 @@
         flex: none;
         width: 40%;
         max-width: 700px;
-        min-width: 300px;
+        min-width: 340px;
         display: flex;
         flex-direction: column;
         border-left: 1px solid rgba(white, .1);
-
-        .details-header {
-            display: flex;
-            align-items: center;
-            padding: 8px 10px 8px 15px;
-            word-break: break-all;
-        }
-
-        .actions {
-            padding: 0 15px 10px;
-
-            .container-row {
-                display: flex;
-                align-items: center;
-                gap: 5px;
-                margin-bottom: 5px;
-            }
-
-            .container-name {
-                flex: 1 1 0;
-                min-width: 0;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                font-family: monospace;
-                font-size: 12px;
-            }
-
-            .buttons {
-                display: flex;
-                gap: 5px;
-                margin-top: 5px;
-            }
-        }
-
-        .yaml {
-            flex: 1 1 0;
-            overflow: auto;
-            margin: 0;
-            padding: 10px 15px;
-            font-size: 12px;
-            border-top: 1px solid rgba(white, .1);
-            user-select: text;
-        }
     }
 }
