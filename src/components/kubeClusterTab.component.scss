@@ -1,0 +1,192 @@
+:host {
+    display: flex;
+    flex: auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+
+    > .header {
+        padding: 8px 15px;
+        display: flex;
+        align-items: center;
+        flex: none;
+        border-bottom: 1px solid rgba(white, .1);
+    }
+
+    .context {
+        white-space: nowrap;
+    }
+
+    .version, .count {
+        font-size: 12px;
+        opacity: .5;
+        white-space: nowrap;
+    }
+
+    .namespace {
+        width: 220px;
+        flex: none;
+    }
+
+    .filter {
+        width: 260px;
+        flex: none;
+    }
+
+    > .main {
+        display: flex;
+        flex: 1 1 0;
+        min-height: 0;
+    }
+
+    .sidebar {
+        flex: none;
+        width: 170px;
+        overflow-y: auto;
+        padding: 5px 0;
+        border-right: 1px solid rgba(white, .1);
+
+        .section-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            opacity: .5;
+            padding: 10px 15px 3px;
+        }
+
+        .kind {
+            display: block;
+            padding: 3px 15px 3px 25px;
+            cursor: pointer;
+            color: inherit;
+            text-decoration: none;
+
+            &:hover {
+                background: rgba(white, .05);
+            }
+
+            &.active {
+                background: rgba(white, .1);
+                font-weight: bold;
+            }
+        }
+    }
+
+    .content {
+        flex: 1 1 0;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .table-wrap {
+        flex: 1 1 0;
+        overflow: auto;
+    }
+
+    table {
+        font-size: 13px;
+        margin: 0;
+        color: inherit;
+        --bs-table-bg: transparent;
+        --bs-table-color: inherit;
+        --bs-table-hover-color: inherit;
+        --bs-table-hover-bg: rgba(255, 255, 255, .05);
+
+        th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: var(--bs-body-bg, #1e1e1e);
+            font-weight: normal;
+            font-size: 12px;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+            padding: 6px 10px;
+        }
+
+        td {
+            white-space: nowrap;
+            padding: 3px 10px;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        th:first-child, td:first-child {
+            padding-left: 15px;
+        }
+
+        .wide {
+            width: 100%;
+            max-width: 0;
+            min-width: 200px;
+        }
+
+        tr {
+            cursor: pointer;
+        }
+
+        tr.selected td {
+            background: rgba(white, .1);
+        }
+
+        td[data-tone=ok] { color: var(--bs-success, #4caf50); }
+        td[data-tone=warning] { color: var(--bs-warning, #ffc107); }
+        td[data-tone=error] { color: var(--bs-danger, #f44336); }
+        td[data-tone=muted] { opacity: .5; }
+    }
+
+    .details {
+        flex: none;
+        width: 40%;
+        max-width: 700px;
+        min-width: 300px;
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid rgba(white, .1);
+
+        .details-header {
+            display: flex;
+            align-items: center;
+            padding: 8px 10px 8px 15px;
+            word-break: break-all;
+        }
+
+        .actions {
+            padding: 0 15px 10px;
+
+            .container-row {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                margin-bottom: 5px;
+            }
+
+            .container-name {
+                flex: 1 1 0;
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                font-family: monospace;
+                font-size: 12px;
+            }
+
+            .buttons {
+                display: flex;
+                gap: 5px;
+                margin-top: 5px;
+            }
+        }
+
+        .yaml {
+            flex: 1 1 0;
+            overflow: auto;
+            margin: 0;
+            padding: 10px 15px;
+            font-size: 12px;
+            border-top: 1px solid rgba(white, .1);
+            user-select: text;
+        }
+    }
+}

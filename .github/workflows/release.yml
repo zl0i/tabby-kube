@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+
+      - name: Start a cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: tabby-kube
+      - name: Wait for a pod with a shell
+        run: |
+          kubectl run shell --image=busybox:1.36 --restart=Never -- sleep 3600
+          kubectl wait --for=condition=Ready pod/shell --timeout=120s
+          kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=kube-dns --timeout=120s
+      - run: npm test
+        env:
+          KUBE_TEST_CONTEXT: kind-tabby-kube
+          KUBE_TEST_EXEC: default/shell/shell
+
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tabby-kube
+          path: tabby-kube-*.tgz
+      - name: Attach the package to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: tabby-kube-*.tgz

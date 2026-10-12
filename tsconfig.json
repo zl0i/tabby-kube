@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "baseUrl": "src",
+    "module": "es2015",
+    "target": "es2016",
+    "moduleResolution": "node",
+    "noImplicitAny": false,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "sourceMap": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "importHelpers": true,
+    "strictNullChecks": true,
+    "lib": ["DOM", "ES2021"],
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "angularCompilerOptions": {
+    "strictTemplates": true,
+    "enableResourceInlining": true,
+    "strictInjectionParameters": true
+  }
+}

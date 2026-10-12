@@ -1,0 +1,383 @@
+import { Component, Injector, Input, NgZone } from '@angular/core'
+import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
+import { auditTime } from 'rxjs'
+import {
+    BaseTabComponent,
+    MenuItemOptions,
+    NotificationsService,
+    PlatformService,
+    ProfilesService,
+    PromptModalComponent,
+    RecoveryToken,
+} from 'tabby-core'
+import { KubeObject, KubeProfile, KubeTerminalMode } from '../api'
+import { KubeCluster, toYaml } from '../kube/cluster'
+import { findKind, KubeColumn, KubeResourceKind, podContainers, podRestarts, RESOURCE_KINDS, Tone } from '../kube/resources'
+import { ResourceWatcher } from '../kube/watcher'
+import { containerProfile } from '../profiles'
+
+/** Redraws at most this often while objects change */
+const UPDATE_INTERVAL = 250
+/** Ages tick even when nothing changes */
+const AGE_REFRESH_INTERVAL = 5000
+
+export interface KubeClusterTabState {
+    kind: string
+    namespace: string
+}
+
+interface Section {
+    title: string
+    kinds: KubeResourceKind[]
+}
+
+interface Cell {
+    text: string
+    tone: Tone|null
+}
+
+interface Row {
+    obj: KubeObject
+    uid: string
+    cells: Cell[]
+    sortValues: (string|number)[]
+}
+
+const NAME_COLUMN: KubeColumn = { title: 'Name', value: obj => obj.metadata.name, wide: true }
+const NAMESPACE_COLUMN: KubeColumn = { title: 'Namespace', value: obj => obj.metadata.namespace ?? '' }
+
+/** @hidden */
+@Component({
+    selector: 'kube-cluster-tab',
+    templateUrl: './kubeClusterTab.component.pug',
+    styleUrls: ['./kubeClusterTab.component.scss'],
+})
+export class KubeClusterTabComponent extends BaseTabComponent {
+    @Input() profile: KubeProfile
+    @Input() state: KubeClusterTabState|undefined
+    cluster: KubeCluster|null = null
+    version = ''
+    connecting = false
+    error: string|null = null
+    /** Null when the credentials may not list namespaces; the namespace is typed in then */
+    namespaces: string[]|null = []
+    /** Empty means all namespaces */
+    namespace = ''
+    kind: KubeResourceKind = RESOURCE_KINDS[0]
+    sections: Section[] = []
+    columns: KubeColumn[] = []
+    rows: Row[] = []
+    totalCount = 0
+    filterText = ''
+    sortColumn = 'Name'
+    sortDescending = false
+    selectedUid: string|null = null
+    selectedYaml = ''
+    private watcher: ResourceWatcher|null = null
+    private ageTimer: ReturnType<typeof setInterval>|null = null
+
+    constructor (
+        injector: Injector,
+        private zone: NgZone,
+        private ngbModal: NgbModal,
+        private notifications: NotificationsService,
+        private profiles: ProfilesService,
+        private platform: PlatformService,
+    ) {
+        super(injector)
+        for (const kind of RESOURCE_KINDS) {
+            let section = this.sections.find(x => x.title === kind.section)
+            if (!section) {
+                section = { title: kind.section, kinds: [] }
+                this.sections.push(section)
+            }
+            section.kinds.push(kind)
+        }
+    }
+
+    async ngOnInit (): Promise<void> {
+        this.setTitle(this.profile.name)
+        this.kind = findKind(this.state?.kind ?? '') ?? RESOURCE_KINDS[0]
+        this.applyDefaultSort()
+        this.ageTimer = setInterval(() => this.updateRows(), AGE_REFRESH_INTERVAL)
+        await this.connect()
+    }
+
+    get selected (): KubeObject|null {
+        return this.rows.find(x => x.uid === this.selectedUid)?.obj ?? null
+    }
+
+    get loading (): boolean {
+        return !!this.watcher && !this.watcher.loaded
+    }
+
+    get watchError (): string|null {
+        return this.watcher?.error ?? null
+    }
+
+    // Connection
+
+    async connect (): Promise<void> {
+        this.stopWatching()
+        this.cluster = null
+        this.error = null
+        this.connecting = true
+        try {
+            const cluster = new KubeCluster(this.profile.options)
+            this.version = await cluster.getVersion()
+            this.namespace = this.state?.namespace ?? (this.profile.options.namespace || cluster.contextNamespace)
+            this.namespaces = await cluster.listNamespaces()
+            this.cluster = cluster
+            this.watch()
+        } catch (e) {
+            console.error('Could not connect to the cluster', e)
+            this.cluster = null
+            this.error = e.message
+        } finally {
+            this.connecting = false
+        }
+    }
+
+    // Navigation
+
+    selectKind (kind: KubeResourceKind): void {
+        if (kind === this.kind) {
+            return
+        }
+        this.kind = kind
+        this.selectedUid = null
+        this.applyDefaultSort()
+        this.watch()
+    }
+
+    selectNamespace (namespace: string): void {
+        this.namespace = namespace.trim()
+        this.selectedUid = null
+        this.watch()
+    }
+
+    private watch (): void {
+        this.stopWatching()
+        if (!this.cluster) {
+            return
+        }
+        this.columns = [
+            ...this.kind.hideName ? [] : [NAME_COLUMN],
+            ...this.kind.namespaced && !this.namespace ? [NAMESPACE_COLUMN] : [],
+            ...this.kind.columns,
+        ]
+        this.rows = []
+        this.totalCount = 0
+        this.watcher = this.cluster.watch(this.kind, this.kind.namespaced ? this.namespace || null : null)
+        // Watch events arrive from network streams, outside of Angular's change detection
+        this.watcher.changed$.pipe(auditTime(UPDATE_INTERVAL)).subscribe(() => this.zone.run(() => this.updateRows()))
+    }
+
+    private stopWatching (): void {
+        this.watcher?.stop()
+        this.watcher = null
+    }
+
+    // Table
+
+    onFilterChange (): void {
+        this.updateRows()
+    }
+
+    clearFilter (): void {
+        this.filterText = ''
+        this.updateRows()
+    }
+
+    sortBy (column: KubeColumn): void {
+        if (this.sortColumn === column.title) {
+            this.sortDescending = !this.sortDescending
+        } else {
+            this.sortColumn = column.title
+            this.sortDescending = false
+        }
+        this.updateRows()
+    }
+
+    sortIcon (column: KubeColumn): string {
+        if (this.sortColumn !== column.title) {
+            return ''
+        }
+        return this.sortDescending ? 'fas fa-sort-down' : 'fas fa-sort-up'
+    }
+
+    private applyDefaultSort (): void {
+        this.sortColumn = this.kind.defaultSort?.column ?? 'Name'
+        this.sortDescending = this.kind.defaultSort?.descending ?? false
+    }
+
+    updateRows (): void {
+        const objects = this.watcher?.items ?? []
+        this.totalCount = objects.length
+        const query = this.filterText.trim().toLowerCase()
+        const sortIndex = Math.max(0, this.columns.findIndex(x => x.title === this.sortColumn))
+
+        const rows: Row[] = objects.map(obj => ({
+            obj,
+            uid: obj.metadata.uid,
+            cells: this.columns.map(column => ({ text: column.value(obj), tone: column.tone?.(obj) ?? null })),
+            sortValues: this.columns.map(column => column.sortValue?.(obj) ?? column.value(obj)),
+        }))
+        const filtered = query
+            ? rows.filter(row => row.cells.some(cell => cell.text.toLowerCase().includes(query)))
+            : rows
+        filtered.sort((a, b) => {
+            const x = a.sortValues[sortIndex]
+            const y = b.sortValues[sortIndex]
+            const result = typeof x === 'number' && typeof y === 'number'
+                ? x - y
+                : String(x).localeCompare(String(y), undefined, { numeric: true })
+            return (this.sortDescending ? -result : result) || a.obj.metadata.name.localeCompare(b.obj.metadata.name)
+        })
+        this.rows = filtered
+
+        const selected = this.selected
+        this.selectedYaml = selected ? toYaml(this.kind, selected) : ''
+    }
+
+    trackRow (_index: number, row: Row): string {
+        return row.uid
+    }
+
+    select (row: Row): void {
+        this.selectedUid = this.selectedUid === row.uid ? null : row.uid
+        this.updateRows()
+    }
+
+    closeDetails (): void {
+        this.selectedUid = null
+    }
+
+    // Actions
+
+    get isPods (): boolean {
+        return this.kind.id === 'pods'
+    }
+
+    containersOf (pod: KubeObject): string[] {
+        return podContainers(pod)
+    }
+
+    hasRestarted (pod: KubeObject): boolean {
+        return podRestarts(pod) > 0
+    }
+
+    openContainer (pod: KubeObject, container: string, mode: KubeTerminalMode, previous = false): void {
+        this.profiles.openNewTabForProfile(containerProfile(
+            { kubeconfig: this.profile.options.kubeconfig, context: this.cluster!.contextName },
+            pod.metadata.namespace!,
+            pod.metadata.name,
+            container,
+            mode,
+            { previous },
+        ))
+    }
+
+    showContextMenu (row: Row, event: MouseEvent): void {
+        event.preventDefault()
+        this.selectedUid = row.uid
+        this.updateRows()
+        this.platform.popupContextMenu(this.actionsFor(row.obj), event)
+    }
+
+    private actionsFor (obj: KubeObject): MenuItemOptions[] {
+        const items: MenuItemOptions[] = []
+        if (this.isPods) {
+            const containers = podContainers(obj)
+            const perContainer = (mode: KubeTerminalMode, previous = false): Partial<MenuItemOptions> => containers.length === 1
+                ? { click: () => this.openContainer(obj, containers[0], mode, previous) }
+                : { submenu: containers.map(c => ({ label: c, click: () => this.openContainer(obj, c, mode, previous) })) }
+            items.push(
+                { label: 'Shell', ...perContainer('shell') },
+                { label: 'Logs', ...perContainer('logs') },
+            )
+            if (this.hasRestarted(obj)) {
+                items.push({ label: 'Previous logs', ...perContainer('logs', true) })
+            }
+            items.push({ type: 'separator' })
+        }
+        if (this.kind.restartable) {
+            items.push({ label: 'Restart', click: () => this.restart(obj) })
+        }
+        if (this.kind.scalable) {
+            items.push({ label: 'Scale…', click: () => this.scale(obj) })
+        }
+        items.push(
+            { label: 'Copy name', click: () => this.platform.setClipboard({ text: obj.metadata.name }) },
+            { label: 'Copy YAML', click: () => this.platform.setClipboard({ text: toYaml(this.kind, obj) }) },
+            { type: 'separator' },
+            { label: 'Delete', click: () => this.delete(obj) },
+        )
+        return items
+    }
+
+    async restart (obj: KubeObject): Promise<void> {
+        if (!await this.confirm(`Restart the pods of ${this.kind.kind.toLowerCase()} ${obj.metadata.name}?`, 'Restart')) {
+            return
+        }
+        await this.run(() => this.cluster!.restart(this.kind, obj), `Restarting ${obj.metadata.name}`)
+    }
+
+    async scale (obj: KubeObject): Promise<void> {
+        const modal = this.ngbModal.open(PromptModalComponent)
+        modal.componentInstance.prompt = `Replicas of ${obj.metadata.name}`
+        modal.componentInstance.value = String(obj.spec?.replicas ?? 0)
+        const result = await modal.result.catch(() => null)
+        const replicas = Number(result?.value)
+        if (!result?.value || !Number.isInteger(replicas) || replicas < 0) {
+            return
+        }
+        await this.run(() => this.cluster!.scale(this.kind, obj, replicas), `Scaling ${obj.metadata.name} to ${replicas}`)
+    }
+
+    async delete (obj: KubeObject): Promise<void> {
+        const where = obj.metadata.namespace ? ` in ${obj.metadata.namespace}` : ''
+        if (!await this.confirm(`Delete ${this.kind.kind.toLowerCase()} ${obj.metadata.name}${where}?`, 'Delete')) {
+            return
+        }
+        await this.run(() => this.cluster!.delete(this.kind, obj), `Deleting ${obj.metadata.name}`)
+    }
+
+    private async confirm (message: string, action: string): Promise<boolean> {
+        return (await this.platform.showMessageBox({
+            type: 'warning',
+            message,
+            detail: `Context: ${this.cluster?.contextName}`,
+            buttons: [action, 'Cancel'],
+            defaultId: 1,
+            cancelId: 1,
+        })).response === 0
+    }
+
+    private async run (action: () => Promise<void>, notice: string): Promise<void> {
+        try {
+            await action()
+            this.notifications.notice(notice)
+        } catch (e) {
+            this.notifications.error(e.message)
+        }
+    }
+
+    // Tab
+
+    async getRecoveryToken (): Promise<RecoveryToken> {
+        return {
+            type: 'app:kube-tab',
+            profile: this.profile,
+            state: { kind: this.kind.id, namespace: this.namespace } as KubeClusterTabState,
+        }
+    }
+
+    destroy (skipDestroyedEvent = false): void {
+        this.stopWatching()
+        if (this.ageTimer) {
+            clearInterval(this.ageTimer)
+        }
+        super.destroy(skipDestroyedEvent)
+    }
+}

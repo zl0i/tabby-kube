@@ -1,0 +1,29 @@
+.mb-3
+    label(translate) Kubeconfig
+    input.form-control(
+        type='text',
+        placeholder='$KUBECONFIG or ~/.kube/config',
+        [(ngModel)]='profile.options.kubeconfig',
+        (change)='loadContexts()',
+    )
+    small.text-muted(translate) Contexts of the default kubeconfig are listed as profiles already; set a file here for clusters from another one.
+
+.row
+    .col-6
+        .mb-3
+            label(translate) Context
+            input.form-control(
+                type='text',
+                alwaysVisibleTypeahead,
+                placeholder='current-context',
+                [(ngModel)]='profile.options.context',
+                [ngbTypeahead]='contextsAutocomplete',
+            )
+    .col-6
+        .mb-3
+            label(translate) Namespace
+            input.form-control(
+                type='text',
+                placeholder='All namespaces',
+                [(ngModel)]='profile.options.namespace',
+            )

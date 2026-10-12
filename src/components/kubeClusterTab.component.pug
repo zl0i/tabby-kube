@@ -1,0 +1,121 @@
+.header
+    .context.me-3
+        i.fas.fa-dharmachakra.me-2
+        strong {{cluster?.contextName ?? profile.name}}
+        span.version.ms-2(*ngIf='version') {{version}}
+
+    ng-container(*ngIf='cluster')
+        select.form-select.form-select-sm.namespace(
+            *ngIf='namespaces !== null',
+            [disabled]='!kind.namespaced',
+            [ngModel]='namespace',
+            (ngModelChange)='selectNamespace($event)'
+        )
+            option(value='', translate) All namespaces
+            option(*ngIf='namespace && !namespaces.includes(namespace)', [value]='namespace') {{namespace}}
+            option(*ngFor='let ns of namespaces', [value]='ns') {{ns}}
+        input.form-control.form-control-sm.namespace(
+            *ngIf='namespaces === null',
+            type='text',
+            placeholder='Namespace',
+            [disabled]='!kind.namespaced',
+            [ngModel]='namespace',
+            (change)='selectNamespace($any($event.target).value)'
+        )
+
+        .input-group.input-group-sm.filter.ms-2
+            input.form-control(
+                type='text',
+                placeholder='Filter...',
+                [(ngModel)]='filterText',
+                (input)='onFilterChange()',
+                (keydown.escape)='clearFilter()'
+            )
+            button.btn.btn-secondary(*ngIf='filterText', (click)='clearFilter()')
+                i.fas.fa-times
+
+    .flex-grow-1
+    .count.me-2(*ngIf='cluster && !loading')
+        span(*ngIf='rows.length !== totalCount') {{rows.length}} of&nbsp;
+        span {{totalCount}}
+
+.alert.alert-danger.d-flex.align-items-center.m-3(*ngIf='error')
+    .me-auto {{error}}
+    button.btn.btn-secondary.ms-3((click)='connect()', translate) Retry
+.m-3(*ngIf='connecting', translate) Connecting
+
+.main(*ngIf='cluster')
+    .sidebar
+        ng-container(*ngFor='let section of sections')
+            .section-title {{section.title}}
+            a.kind(
+                *ngFor='let k of section.kinds',
+                [class.active]='k === kind',
+                (click)='selectKind(k)'
+            ) {{k.title}}
+
+    .content
+        .alert.alert-warning.mx-3.mt-2.mb-0(*ngIf='watchError') {{watchError}}
+        .m-3(*ngIf='loading && !watchError', translate) Loading
+        .table-wrap(*ngIf='!loading')
+            table.table.table-sm.table-hover
+                thead
+                    tr
+                        th(
+                            *ngFor='let column of columns',
+                            [class.wide]='column.wide',
+                            (click)='sortBy(column)'
+                        )
+                            span {{column.title}}
+                            i.ms-1([class]='sortIcon(column)')
+                tbody
+                    tr(
+                        *ngFor='let row of rows; trackBy: trackRow',
+                        [class.selected]='row.uid === selectedUid',
+                        (click)='select(row)',
+                        (contextmenu)='showContextMenu(row, $event)'
+                    )
+                        td(
+                            *ngFor='let cell of row.cells; let i = index',
+                            [class.wide]='columns[i].wide',
+                            [attr.data-tone]='cell.tone',
+                            [title]='cell.text'
+                        ) {{cell.text}}
+            .text-muted.text-center.mt-3(*ngIf='!rows.length')
+                span(*ngIf='totalCount', translate) Nothing matches the filter
+                span(*ngIf='!totalCount', translate) There is nothing here
+
+    .details(*ngIf='selected')
+        .details-header
+            strong.me-auto {{selected.metadata.name}}
+            button.btn.btn-link.btn-sm((click)='closeDetails()', title='Close')
+                i.fas.fa-times
+
+        .actions
+            ng-container(*ngIf='isPods')
+                .container-row(*ngFor='let c of containersOf(selected)')
+                    .container-name {{c}}
+                    button.btn.btn-secondary.btn-sm((click)='openContainer(selected, c, "shell")')
+                        i.fas.fa-terminal.me-1
+                        span(translate) Shell
+                    button.btn.btn-secondary.btn-sm((click)='openContainer(selected, c, "logs")')
+                        i.fas.fa-stream.me-1
+                        span(translate) Logs
+                    button.btn.btn-secondary.btn-sm(
+                        *ngIf='hasRestarted(selected)',
+                        (click)='openContainer(selected, c, "logs", true)',
+                        title='Logs of the previous instance'
+                    )
+                        i.fas.fa-history
+            .buttons
+                button.btn.btn-secondary.btn-sm(*ngIf='kind.restartable', (click)='restart(selected)')
+                    i.fas.fa-redo.me-1
+                    span(translate) Restart
+                button.btn.btn-secondary.btn-sm(*ngIf='kind.scalable', (click)='scale(selected)')
+                    i.fas.fa-arrows-alt-v.me-1
+                    span(translate) Scale
+                button.btn.btn-danger.btn-sm((click)='delete(selected)')
+                    i.fas.fa-trash-alt.me-1
+                    span(translate) Delete
+
+        pre.yaml {{selectedYaml}}
