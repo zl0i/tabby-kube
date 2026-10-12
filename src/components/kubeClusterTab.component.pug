@@ -50,11 +50,47 @@
             .section-title {{section.title}}
             a.kind(
                 *ngFor='let k of section.kinds',
-                [class.active]='k === kind',
+                [class.active]='view === "resources" && k === kind',
                 (click)='selectKind(k)'
             ) {{k.title}}
+            a.kind(
+                *ngIf='section.title === "Network"',
+                [class.active]='view === "port-forwards"',
+                (click)='showPortForwards()'
+            )
+                span(translate) Port forwards
+                span.badge.bg-secondary.ms-2(*ngIf='portForwards.forwards.length') {{portForwards.forwards.length}}
 
-    .content
+    .content(*ngIf='view === "port-forwards"')
+        .table-wrap
+            table.table.table-sm.forwards(*ngIf='portForwards.forwards.length')
+                thead
+                    tr
+                        th(translate) Local address
+                        th.wide(translate) Target
+                        th(translate) Context
+                        th(translate) Connections
+                        th
+                tbody
+                    tr(*ngFor='let f of portForwards.forwards')
+                        td
+                            a.address((click)='openForward(f)', title='Open in the browser') {{forwardAddress(f)}}
+                        td.wide([title]='f.error ?? ""')
+                            span {{f.target.kind.kind}}/{{f.target.name}}:{{f.target.port}}
+                            span.text-muted.ms-2 {{f.target.namespace}}
+                            .forward-error(*ngIf='f.error') {{f.error}}
+                        td {{f.contextName}}
+                        td {{f.connections}}
+                        td.actions
+                            button.btn.btn-link.btn-sm((click)='copyForward(f)', title='Copy the address')
+                                i.far.fa-copy
+                            button.btn.btn-link.btn-sm((click)='stopForward(f)', title='Stop')
+                                i.fas.fa-stop
+            .text-muted.text-center.mt-4(*ngIf='!portForwards.forwards.length')
+                div(translate) No ports are forwarded.
+                small(translate) Right-click a pod, service or workload and choose "Port forward…".
+
+    .content(*ngIf='view === "resources"')
         .alert.alert-warning.mx-3.mt-2.mb-0(*ngIf='watchError') {{watchError}}
         .m-3(*ngIf='loading && !watchError', translate) Loading
         .table-wrap(*ngIf='!loading')
@@ -85,7 +121,7 @@
                 span(*ngIf='totalCount', translate) Nothing matches the filter
                 span(*ngIf='!totalCount', translate) There is nothing here
 
-    .details(*ngIf='selected')
+    .details(*ngIf='view === "resources" && selected')
         .details-header
             strong.me-auto {{selected.metadata.name}}
             button.btn.btn-link.btn-sm((click)='closeDetails()', title='Close')
@@ -108,6 +144,12 @@
                     )
                         i.fas.fa-history
             .buttons
+                button.btn.btn-secondary.btn-sm((click)='editYaml(selected)')
+                    i.fas.fa-pen.me-1
+                    span(translate) Edit
+                button.btn.btn-secondary.btn-sm(*ngIf='canForward()', (click)='portForward(selected)')
+                    i.fas.fa-plug.me-1
+                    span(translate) Forward
                 button.btn.btn-secondary.btn-sm(*ngIf='kind.restartable', (click)='restart(selected)')
                     i.fas.fa-redo.me-1
                     span(translate) Restart

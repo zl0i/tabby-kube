@@ -1,0 +1,40 @@
+.modal-header
+    h5.m-0 {{title}}
+
+.modal-body
+    .mb-3
+        label(translate) Port
+        input.form-control(
+            type='text',
+            autofocus,
+            [class.is-invalid]='remotePort && !remotePortValid',
+            [(ngModel)]='remotePort',
+            (keyup.enter)='ok()',
+        )
+        .d-flex.flex-wrap.gap-1.mt-2(*ngIf='ports.length')
+            button.btn.btn-sm(
+                *ngFor='let p of ports',
+                [class.btn-primary]='isPicked(p)',
+                [class.btn-secondary]='!isPicked(p)',
+                (click)='pick(p)'
+            ) {{p.port}}
+                span.ms-1.opacity-75(*ngIf='p.name') {{p.name}}
+
+    .mb-3
+        label(translate) Local port
+        input.form-control(
+            type='text',
+            [placeholder]='remotePort || "Same as the port"',
+            [class.is-invalid]='!localPortValid',
+            [(ngModel)]='localPort',
+            (keyup.enter)='ok()',
+        )
+        small.text-muted(translate) Listens on 127.0.0.1. 0 picks a free port.
+
+.modal-footer
+    button.btn.btn-secondary((click)='cancel()', translate) Cancel
+    button.btn.btn-primary(
+        (click)='ok()',
+        [disabled]='!remotePortValid || !localPortValid',
+        translate
+    ) Forward

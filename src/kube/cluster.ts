@@ -52,6 +52,17 @@ export class KubeCluster {
         return kubeJson(this.kc, 'GET', resourcePath(kind, obj.metadata.namespace ?? null, obj.metadata.name))
     }
 
+    /**
+     * Replaces the object with an edited one. Its resourceVersion has to be the current one,
+     * otherwise the server refuses with 409 Conflict. A dry run checks the change without making it.
+     */
+    async replace (kind: KubeResourceKind, obj: KubeObject, options: { dryRun?: boolean } = {}): Promise<KubeObject> {
+        return kubeJson(this.kc, 'PUT', resourcePath(kind, obj.metadata.namespace ?? null, obj.metadata.name), {
+            body: obj,
+            query: { dryRun: options.dryRun ? 'All' : undefined, fieldManager: 'tabby-kube' },
+        })
+    }
+
     async delete (kind: KubeResourceKind, obj: KubeObject): Promise<void> {
         await kubeJson(this.kc, 'DELETE', resourcePath(kind, obj.metadata.namespace ?? null, obj.metadata.name), {
             body: { propagationPolicy: 'Background' },

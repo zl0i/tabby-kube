@@ -5,9 +5,11 @@
 import './fakeTabby'
 import { after, describe, test } from 'node:test'
 import * as assert from 'node:assert/strict'
+import * as http from 'node:http'
 import { KubeTerminalProfileOptions } from '../src/api'
 import { KubeCluster } from '../src/kube/cluster'
 import { KubeApiError } from '../src/kube/http'
+import { PortForwarder } from '../src/kube/portForward'
 import { findKind, podStatus } from '../src/kube/resources'
 import { ResourceWatcher } from '../src/kube/watcher'
 import { KubeLogsSession, KubeShellSession } from '../src/sessions'
@@ -114,5 +116,69 @@ describe('a real cluster', { skip: !context && 'KUBE_TEST_CONTEXT is not set' },
         await session.start({ columns: 80, rows: 24 })
         await fake.ended
         assert.match(fake.printed, /tabby-kube-ok/)
+    })
+
+    // CoreDNS serves its metrics on 9153, behind the kube-dns service, in k3s and kind alike
+    function httpGet (port: number, path: string): Promise<{ status: number, body: string }> {
+        return new Promise((resolve, reject) => {
+            http.get({ host: '127.0.0.1', port, path }, response => {
+                let body = ''
+                response.on('data', chunk => { body += chunk })
+                response.on('end', () => resolve({ status: response.statusCode ?? 0, body }))
+            }).on('error', reject)
+        })
+    }
+
+    for (const [kindId, name] of [['services', 'kube-dns'], ['deployments', 'coredns']]) {
+        test(`forwards a port of ${kindId}/${name}`, async () => {
+            const forwarder = new PortForwarder(cluster.kc, cluster.contextName, {
+                kind: findKind(kindId)!, namespace: 'kube-system', name, port: 9153,
+            })
+            await forwarder.start(0)
+            try {
+                assert.ok(forwarder.localPort > 0)
+                // Connections in a row, each with a stream of its own; the port headers arrive with the
+                // handshake now and then, so a few tries catch them being mistaken for data
+                for (let i = 0; i < 10; i++) {
+                    const response = await httpGet(forwarder.localPort, '/metrics')
+                    assert.equal(response.status, 200)
+                    assert.match(response.body, /coredns_/)
+                }
+                assert.equal(forwarder.error, null)
+            } finally {
+                forwarder.stop()
+            }
+        })
+    }
+
+    test('reports a forward to a port nothing listens on', async () => {
+        const pods = cluster.watch(findKind('pods')!, 'kube-system')
+        await waitFor(() => pods.loaded)
+        const coredns = pods.items.find(x => x.metadata.labels?.['k8s-app'] === 'kube-dns' && podStatus(x) === 'Running')!
+        pods.stop()
+
+        const forwarder = new PortForwarder(cluster.kc, cluster.contextName, {
+            kind: findKind('pods')!, namespace: 'kube-system', name: coredns.metadata.name, port: 1,
+        })
+        await forwarder.start(0)
+        try {
+            await httpGet(forwarder.localPort, '/').catch(() => null)
+            await waitFor(() => !!forwarder.error)
+            assert.match(forwarder.error!, /refused|failed|error/i)
+        } finally {
+            forwarder.stop()
+        }
+    })
+
+    test('checks a replacement with a dry run, and refuses one from an old version', async () => {
+        const kind = findKind('configmaps')!
+        const current = await cluster.read(kind, { metadata: { name: 'coredns', namespace: 'kube-system', uid: '' } })
+        // dryRun=All: the server validates and answers, but stores nothing
+        const checked = await cluster.replace(kind, current, { dryRun: true })
+        assert.equal(checked.metadata.name, 'coredns')
+        await assert.rejects(
+            cluster.replace(kind, { ...current, metadata: { ...current.metadata, resourceVersion: '1' } }, { dryRun: true }),
+            (e: KubeApiError) => e.statusCode === 409,
+        )
     })
 })

@@ -12,14 +12,20 @@ import {
 } from 'tabby-core'
 import { KubeObject, KubeProfile, KubeTerminalMode } from '../api'
 import { KubeCluster, toYaml } from '../kube/cluster'
+import { canForward, forwardablePorts, PortForwarder } from '../kube/portForward'
 import { findKind, KubeColumn, KubeResourceKind, podContainers, podRestarts, RESOURCE_KINDS, Tone } from '../kube/resources'
 import { ResourceWatcher } from '../kube/watcher'
 import { containerProfile } from '../profiles'
+import { PortForwardsService } from '../services/portForwards.service'
+import { YamlEditor } from '../yamlEditor'
+import { PortForwardChoice, PortForwardModalComponent } from './portForwardModal.component'
 
 /** Redraws at most this often while objects change */
 const UPDATE_INTERVAL = 250
 /** Ages tick even when nothing changes */
 const AGE_REFRESH_INTERVAL = 5000
+/** The state's kind for the port forwards view */
+const PORT_FORWARDS_VIEW = 'port-forwards'
 
 export interface KubeClusterTabState {
     kind: string
@@ -64,6 +70,7 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     /** Empty means all namespaces */
     namespace = ''
     kind: KubeResourceKind = RESOURCE_KINDS[0]
+    view: 'resources' | 'port-forwards' = 'resources'
     sections: Section[] = []
     columns: KubeColumn[] = []
     rows: Row[] = []
@@ -75,6 +82,7 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     selectedYaml = ''
     private watcher: ResourceWatcher|null = null
     private ageTimer: ReturnType<typeof setInterval>|null = null
+    private yamlEditor: YamlEditor
 
     constructor (
         injector: Injector,
@@ -83,8 +91,10 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         private notifications: NotificationsService,
         private profiles: ProfilesService,
         private platform: PlatformService,
+        public portForwards: PortForwardsService,
     ) {
         super(injector)
+        this.yamlEditor = new YamlEditor(() => this.cluster, platform, notifications)
         for (const kind of RESOURCE_KINDS) {
             let section = this.sections.find(x => x.title === kind.section)
             if (!section) {
@@ -98,6 +108,11 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     async ngOnInit (): Promise<void> {
         this.setTitle(this.profile.name)
         this.kind = findKind(this.state?.kind ?? '') ?? RESOURCE_KINDS[0]
+        if (this.state?.kind === PORT_FORWARDS_VIEW) {
+            this.view = 'port-forwards'
+        }
+        // Connections come and go outside of Angular's change detection
+        this.subscribeUntilDestroyed(this.portForwards.changed$.pipe(auditTime(UPDATE_INTERVAL)), () => this.zone.run(() => null))
         this.applyDefaultSort()
         this.ageTimer = setInterval(() => this.updateRows(), AGE_REFRESH_INTERVAL)
         await this.connect()
@@ -141,13 +156,20 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     // Navigation
 
     selectKind (kind: KubeResourceKind): void {
-        if (kind === this.kind) {
+        const wasResources = this.view === 'resources'
+        this.view = 'resources'
+        if (kind === this.kind && wasResources) {
             return
         }
         this.kind = kind
         this.selectedUid = null
         this.applyDefaultSort()
         this.watch()
+    }
+
+    showPortForwards (): void {
+        this.view = 'port-forwards'
+        this.selectedUid = null
     }
 
     selectNamespace (namespace: string): void {
@@ -301,6 +323,9 @@ export class KubeClusterTabComponent extends BaseTabComponent {
             }
             items.push({ type: 'separator' })
         }
+        if (canForward(this.kind)) {
+            items.push({ label: 'Port forward…', click: () => this.portForward(obj) })
+        }
         if (this.kind.restartable) {
             items.push({ label: 'Restart', click: () => this.restart(obj) })
         }
@@ -310,10 +335,62 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         items.push(
             { label: 'Copy name', click: () => this.platform.setClipboard({ text: obj.metadata.name }) },
             { label: 'Copy YAML', click: () => this.platform.setClipboard({ text: toYaml(this.kind, obj) }) },
+            { label: 'Edit YAML', click: () => this.editYaml(obj) },
             { type: 'separator' },
             { label: 'Delete', click: () => this.delete(obj) },
         )
         return items
+    }
+
+    canForward (): boolean {
+        return canForward(this.kind)
+    }
+
+    async portForward (obj: KubeObject): Promise<void> {
+        const modal = this.ngbModal.open(PortForwardModalComponent)
+        modal.componentInstance.title = `Forward a port of ${obj.metadata.name}`
+        modal.componentInstance.ports = forwardablePorts(this.kind, obj)
+        const choice: PortForwardChoice|null = await modal.result.catch(() => null)
+        if (!choice || !this.cluster) {
+            return
+        }
+        try {
+            const forwarder = await this.portForwards.start(this.cluster.kc, this.cluster.contextName, {
+                kind: this.kind,
+                namespace: obj.metadata.namespace!,
+                name: obj.metadata.name,
+                port: choice.remotePort,
+            }, choice.localPort)
+            this.notifications.notice(`Forwarding 127.0.0.1:${forwarder.localPort} to ${obj.metadata.name}:${choice.remotePort}`)
+        } catch (e) {
+            this.notifications.error(e.code === 'EADDRINUSE'
+                ? `Port ${choice.localPort} is taken on this computer; choose another local port, or 0 for any free one`
+                : e.message)
+        }
+    }
+
+    forwardAddress (forwarder: PortForwarder): string {
+        return `127.0.0.1:${forwarder.localPort}`
+    }
+
+    openForward (forwarder: PortForwarder): void {
+        this.platform.openExternal(`http://${this.forwardAddress(forwarder)}`)
+    }
+
+    copyForward (forwarder: PortForwarder): void {
+        this.platform.setClipboard({ text: this.forwardAddress(forwarder) })
+    }
+
+    stopForward (forwarder: PortForwarder): void {
+        this.portForwards.stop(forwarder)
+    }
+
+    async editYaml (obj: KubeObject): Promise<void> {
+        try {
+            await this.yamlEditor.edit(this.kind, obj)
+        } catch (e) {
+            this.notifications.error(e.message)
+        }
     }
 
     async restart (obj: KubeObject): Promise<void> {
@@ -369,12 +446,13 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         return {
             type: 'app:kube-tab',
             profile: this.profile,
-            state: { kind: this.kind.id, namespace: this.namespace } as KubeClusterTabState,
+            state: { kind: this.view === 'port-forwards' ? PORT_FORWARDS_VIEW : this.kind.id, namespace: this.namespace } as KubeClusterTabState,
         }
     }
 
     destroy (skipDestroyedEvent = false): void {
         this.stopWatching()
+        this.yamlEditor.dispose()
         if (this.ageTimer) {
             clearInterval(this.ageTimer)
         }

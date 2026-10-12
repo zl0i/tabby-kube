@@ -8,6 +8,7 @@ import TabbyTerminalModule from 'tabby-terminal'
 import { KubeClusterTabComponent } from './components/kubeClusterTab.component'
 import { KubeProfileSettingsComponent } from './components/kubeProfileSettings.component'
 import { KubeTerminalTabComponent } from './components/kubeTerminalTab.component'
+import { PortForwardModalComponent } from './components/portForwardModal.component'
 import { KubeProfilesService, KubeTerminalProfilesService } from './profiles'
 import { RecoveryProvider } from './recoveryProvider'
 
@@ -29,6 +30,7 @@ import { RecoveryProvider } from './recoveryProvider'
         KubeClusterTabComponent,
         KubeProfileSettingsComponent,
         KubeTerminalTabComponent,
+        PortForwardModalComponent,
     ],
 })
 export default class KubeModule { } // eslint-disable-line @typescript-eslint/no-extraneous-class
