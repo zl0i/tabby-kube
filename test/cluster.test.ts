@@ -2,13 +2,16 @@
 //   KUBE_TEST_CONTEXT     kubeconfig context to use (the tests are skipped without it)
 //   KUBE_TEST_KUBECONFIG  kubeconfig file; the default one otherwise
 //   KUBE_TEST_EXEC        namespace/pod/container with a shell, to run `echo` in; the exec test is skipped without it
+//   KUBE_TEST_METRICS     set when the cluster has metrics-server, to require usage figures
 import './fakeTabby'
 import { after, describe, test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import * as http from 'node:http'
 import { KubeTerminalProfileOptions } from '../src/api'
 import { KubeCluster } from '../src/kube/cluster'
+import { listCustomKinds } from '../src/kube/discovery'
 import { KubeApiError } from '../src/kube/http'
+import { fetchNodeUsage, fetchPodUsage } from '../src/kube/metrics'
 import { PortForwarder } from '../src/kube/portForward'
 import { findKind, podStatus } from '../src/kube/resources'
 import { ResourceWatcher } from '../src/kube/watcher'
@@ -180,5 +183,29 @@ describe('a real cluster', { skip: !context && 'KUBE_TEST_CONTEXT is not set' },
             cluster.replace(kind, { ...current, metadata: { ...current.metadata, resourceVersion: '1' } }, { dryRun: true }),
             (e: KubeApiError) => e.statusCode === 409,
         )
+    })
+
+    test('lists the kinds of custom resources, and their objects', async () => {
+        const kinds = await listCustomKinds(cluster.kc)
+        assert.ok(Array.isArray(kinds))
+        for (const kind of kinds.slice(0, 5)) {
+            const watch = cluster.watch(kind, null)
+            await waitFor(() => watch.loaded || !!watch.error)
+            watch.stop()
+            assert.equal(watch.error, null, kind.id)
+        }
+    })
+
+    test('reads resource usage when the cluster has metrics', async () => {
+        const nodes = await fetchNodeUsage(cluster.kc)
+        if (!process.env.KUBE_TEST_METRICS) {
+            // Without metrics-server, usage is just missing
+            assert.ok(nodes === null || nodes.size > 0)
+            return
+        }
+        assert.ok(nodes && nodes.size > 0)
+        assert.ok([...nodes.values()].every(x => x.cpu > 0 && x.memory > 0))
+        const pods = await fetchPodUsage(cluster.kc, 'kube-system')
+        assert.ok(pods && [...pods.keys()].every(x => x.startsWith('kube-system/')))
     })
 })

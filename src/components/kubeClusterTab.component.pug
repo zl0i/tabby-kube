@@ -61,6 +61,19 @@
                 span(translate) Port forwards
                 span.badge.bg-secondary.ms-2(*ngIf='portForwards.forwards.length') {{portForwards.forwards.length}}
 
+        ng-container(*ngIf='customGroups.length')
+            .section-title Custom resources
+            ng-container(*ngFor='let g of customGroups')
+                a.group((click)='toggleGroup(g)', [title]='g.group')
+                    i.fas.fa-fw.me-1([class.fa-caret-right]='!g.expanded', [class.fa-caret-down]='g.expanded')
+                    span {{g.group}}
+                ng-container(*ngIf='g.expanded')
+                    a.kind.nested(
+                        *ngFor='let k of g.kinds',
+                        [class.active]='view === "resources" && k === kind',
+                        (click)='selectKind(k)'
+                    ) {{k.title}}
+
     .content(*ngIf='view === "port-forwards"')
         .table-wrap
             table.table.table-sm.forwards(*ngIf='portForwards.forwards.length')

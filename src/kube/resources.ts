@@ -17,6 +17,8 @@ export interface KubeResourceKind {
     id: string
     title: string
     section: string
+    /** API group of a custom resource, to group them by */
+    group?: string
     apiVersion: string
     kind: string
     plural: string
@@ -71,7 +73,7 @@ function timestampValue (timestamp: string|undefined): number {
     return timestamp ? new Date(timestamp).getTime() : 0
 }
 
-const ageColumn: KubeColumn = {
+export const ageColumn: KubeColumn = {
     title: 'Age',
     value: obj => formatAge(obj.metadata.creationTimestamp),
     // Older first when ascending, as kubectl's --sort-by=.metadata.creationTimestamp

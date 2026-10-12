@@ -12,6 +12,8 @@ import {
 } from 'tabby-core'
 import { KubeObject, KubeProfile, KubeTerminalMode } from '../api'
 import { KubeCluster, toYaml } from '../kube/cluster'
+import { listCustomKinds } from '../kube/discovery'
+import { fetchNodeUsage, fetchPodUsage, hasUsage, Usage, usageColumns } from '../kube/metrics'
 import { canForward, forwardablePorts, PortForwarder } from '../kube/portForward'
 import { findKind, KubeColumn, KubeResourceKind, podContainers, podRestarts, RESOURCE_KINDS, Tone } from '../kube/resources'
 import { ResourceWatcher } from '../kube/watcher'
@@ -24,6 +26,8 @@ import { PortForwardChoice, PortForwardModalComponent } from './portForwardModal
 const UPDATE_INTERVAL = 250
 /** Ages tick even when nothing changes */
 const AGE_REFRESH_INTERVAL = 5000
+/** metrics-server refreshes every 15 s by default */
+const USAGE_INTERVAL = 15000
 /** The state's kind for the port forwards view */
 const PORT_FORWARDS_VIEW = 'port-forwards'
 
@@ -35,6 +39,12 @@ export interface KubeClusterTabState {
 interface Section {
     title: string
     kinds: KubeResourceKind[]
+}
+
+interface CustomGroup {
+    group: string
+    kinds: KubeResourceKind[]
+    expanded: boolean
 }
 
 interface Cell {
@@ -72,6 +82,7 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     kind: KubeResourceKind = RESOURCE_KINDS[0]
     view: 'resources' | 'port-forwards' = 'resources'
     sections: Section[] = []
+    customGroups: CustomGroup[] = []
     columns: KubeColumn[] = []
     rows: Row[] = []
     totalCount = 0
@@ -83,6 +94,12 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     private watcher: ResourceWatcher|null = null
     private ageTimer: ReturnType<typeof setInterval>|null = null
     private yamlEditor: YamlEditor
+    private customKinds: KubeResourceKind[] = []
+    /** A custom kind to open once the cluster's kinds are known (from the recovered state) */
+    private pendingKindId: string|null = null
+    private metricsSupported = false
+    private usage: Map<string, Usage>|null = null
+    private usageTimer: ReturnType<typeof setInterval>|null = null
 
     constructor (
         injector: Injector,
@@ -110,6 +127,8 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         this.kind = findKind(this.state?.kind ?? '') ?? RESOURCE_KINDS[0]
         if (this.state?.kind === PORT_FORWARDS_VIEW) {
             this.view = 'port-forwards'
+        } else if (this.state?.kind && this.kind.id !== this.state.kind) {
+            this.pendingKindId = this.state.kind
         }
         // Connections come and go outside of Angular's change detection
         this.subscribeUntilDestroyed(this.portForwards.changed$.pipe(auditTime(UPDATE_INTERVAL)), () => this.zone.run(() => null))
@@ -141,8 +160,22 @@ export class KubeClusterTabComponent extends BaseTabComponent {
             const cluster = new KubeCluster(this.profile.options)
             this.version = await cluster.getVersion()
             this.namespace = this.state?.namespace ?? (this.profile.options.namespace || cluster.contextNamespace)
-            this.namespaces = await cluster.listNamespaces()
+            const [namespaces, customKinds, nodeUsage] = await Promise.all([
+                cluster.listNamespaces(),
+                listCustomKinds(cluster.kc),
+                fetchNodeUsage(cluster.kc).catch(() => null),
+            ])
+            this.namespaces = namespaces
+            this.setCustomKinds(customKinds)
+            this.metricsSupported = !!nodeUsage
             this.cluster = cluster
+            const pending = this.customKinds.find(x => x.id === this.pendingKindId)
+            this.pendingKindId = null
+            if (pending) {
+                this.kind = pending
+                this.applyDefaultSort()
+                this.expandGroupOf(pending)
+            }
             this.watch()
         } catch (e) {
             console.error('Could not connect to the cluster', e)
@@ -154,6 +187,30 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     }
 
     // Navigation
+
+    private setCustomKinds (kinds: KubeResourceKind[]): void {
+        this.customKinds = kinds
+        this.customGroups = []
+        for (const kind of kinds) {
+            let group = this.customGroups.find(x => x.group === kind.group)
+            if (!group) {
+                group = { group: kind.group!, kinds: [], expanded: false }
+                this.customGroups.push(group)
+            }
+            group.kinds.push(kind)
+        }
+    }
+
+    private expandGroupOf (kind: KubeResourceKind): void {
+        const group = this.customGroups.find(x => x.group === kind.group)
+        if (group) {
+            group.expanded = true
+        }
+    }
+
+    toggleGroup (group: CustomGroup): void {
+        group.expanded = !group.expanded
+    }
 
     selectKind (kind: KubeResourceKind): void {
         const wasResources = this.view === 'resources'
@@ -183,21 +240,56 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         if (!this.cluster) {
             return
         }
+        const columns = [...this.kind.columns]
+        if (this.metricsSupported && hasUsage(this.kind.id)) {
+            const age = columns.findIndex(x => x.title === 'Age')
+            columns.splice(age < 0 ? columns.length : age, 0, ...usageColumns(this.kind.id, () => this.usage))
+        }
         this.columns = [
             ...this.kind.hideName ? [] : [NAME_COLUMN],
             ...this.kind.namespaced && !this.namespace ? [NAMESPACE_COLUMN] : [],
-            ...this.kind.columns,
+            ...columns,
         ]
         this.rows = []
         this.totalCount = 0
         this.watcher = this.cluster.watch(this.kind, this.kind.namespaced ? this.namespace || null : null)
         // Watch events arrive from network streams, outside of Angular's change detection
         this.watcher.changed$.pipe(auditTime(UPDATE_INTERVAL)).subscribe(() => this.zone.run(() => this.updateRows()))
+        this.pollUsage()
+    }
+
+    /** Usage isn't watchable; it is polled while pods or nodes are shown */
+    private pollUsage (): void {
+        if (!this.metricsSupported || !hasUsage(this.kind.id)) {
+            return
+        }
+        const kind = this.kind
+        const namespace = this.namespace || null
+        const poll = async () => {
+            try {
+                const usage = kind.id === 'pods'
+                    ? await fetchPodUsage(this.cluster!.kc, namespace)
+                    : await fetchNodeUsage(this.cluster!.kc)
+                if (kind === this.kind && this.usageTimer) {
+                    this.usage = usage
+                    this.updateRows()
+                }
+            } catch (e) {
+                console.warn('Could not get resource usage', e)
+            }
+        }
+        this.usageTimer = setInterval(poll, USAGE_INTERVAL)
+        poll()
     }
 
     private stopWatching (): void {
         this.watcher?.stop()
         this.watcher = null
+        if (this.usageTimer) {
+            clearInterval(this.usageTimer)
+            this.usageTimer = null
+        }
+        this.usage = null
     }
 
     // Table
