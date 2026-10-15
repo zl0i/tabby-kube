@@ -4,13 +4,17 @@
 //   KUBE_TEST_EXEC        namespace/pod/container with a shell, to run `echo` in; the exec test is skipped without it
 //   KUBE_TEST_METRICS     set when the cluster has metrics-server, to require usage figures
 //   KUBE_TEST_WRITE       set to also run what creates objects (deleted after): a node shell's privileged pod,
-//                         and a config map and a deployment to edit, scale, restart and delete
+//                         a config map and a deployment to edit, scale, restart and delete,
+//                         and objects that use old APIs to find
 import './fakeTabby'
 import { after, describe, test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import * as http from 'node:http'
+import * as zlib from 'node:zlib'
 import { KubeTerminalProfileOptions } from '../src/api'
+import { loadApiContext, scanApiUsage } from '../src/kube/apiScan'
 import { KubeCluster } from '../src/kube/cluster'
+import { checkUsage } from '../src/kube/deprecations'
 import { listCustomKinds } from '../src/kube/discovery'
 import { KubeApiError, kubeJson } from '../src/kube/http'
 import { fetchNodeUsage, fetchPodUsage } from '../src/kube/metrics'
@@ -348,5 +352,54 @@ describe('a real cluster', { skip: !context && 'KUBE_TEST_CONTEXT is not set' },
             await cluster.delete(deployments, ref)
         }
         await assert.rejects(cluster.read(configMaps, ref), (e: KubeApiError) => e.statusCode === 404)
+    })
+
+    test('scans the cluster for the API versions in use', async () => {
+        const apiContext = await loadApiContext(cluster.kc, await cluster.getVersion())
+        assert.ok(apiContext.served?.has('v1'))
+        assert.ok(apiContext.served?.has('apps/v1'))
+        const scan = await scanApiUsage(cluster.kc)
+        for (const found of scan.usages) {
+            assert.ok(found.apiVersion && found.kind, JSON.stringify(found))
+            checkUsage(found, apiContext)
+        }
+    })
+
+    test('finds old APIs in Helm releases and in what kubectl applied', { skip: !process.env.KUBE_TEST_WRITE && 'KUBE_TEST_WRITE is not set' }, async () => {
+        const name = `tabby-kube-old-api-${Date.now()}`
+        // A release as Helm stores it, whose manifest has an HPA of an API removed in 1.25
+        const manifest = `---\napiVersion: autoscaling/v2beta1\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: ${name}\n`
+        const release = { name, namespace: 'default', version: 1, info: { status: 'deployed' }, chart: { metadata: { name: 'old', version: '1.0.0' } }, manifest }
+        const payload = zlib.gzipSync(Buffer.from(JSON.stringify(release))).toString('base64')
+        await kubeJson(cluster.kc, 'POST', '/api/v1/namespaces/default/secrets', {
+            body: {
+                apiVersion: 'v1',
+                kind: 'Secret',
+                type: 'helm.sh/release.v1',
+                metadata: { name: `sh.helm.release.v1.${name}.v1`, labels: { owner: 'helm', name, version: '1', status: 'deployed' } },
+                data: { release: Buffer.from(payload).toString('base64') },
+            },
+        })
+        // A role applied from an old manifest, as its annotation tells
+        const applied = JSON.stringify({ apiVersion: 'rbac.authorization.k8s.io/v1beta1', kind: 'Role', metadata: { name, namespace: 'default' } })
+        await kubeJson(cluster.kc, 'POST', '/apis/rbac.authorization.k8s.io/v1/namespaces/default/roles', {
+            body: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: { name, annotations: { 'kubectl.kubernetes.io/last-applied-configuration': applied } }, rules: [] },
+        })
+        try {
+            const apiContext = await loadApiContext(cluster.kc, await cluster.getVersion())
+            const findings = (await scanApiUsage(cluster.kc)).usages
+                .filter(x => x.name === name)
+                .map(x => checkUsage(x, apiContext))
+            const helm = findings.find(x => x?.source === 'helm')!
+            assert.equal(helm.status, 'removed')
+            assert.equal(helm.replacement, 'autoscaling/v2')
+            assert.equal(helm.release?.name, name)
+            const role = findings.find(x => x?.source === 'applied')!
+            assert.equal(role.apiVersion, 'rbac.authorization.k8s.io/v1beta1')
+            assert.equal(role.status, 'removed')
+        } finally {
+            await kubeJson(cluster.kc, 'DELETE', `/api/v1/namespaces/default/secrets/sh.helm.release.v1.${name}.v1`)
+            await kubeJson(cluster.kc, 'DELETE', `/apis/rbac.authorization.k8s.io/v1/namespaces/default/roles/${name}`)
+        }
     })
 })

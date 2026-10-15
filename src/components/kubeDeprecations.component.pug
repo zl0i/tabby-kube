@@ -1,0 +1,57 @@
+.toolbar
+    span.version Kubernetes {{formatVersion(context.version)}}
+    label.ms-3.me-2(translate) Check for
+    select.form-select.form-select-sm.target([ngModel]='targetIndex', (ngModelChange)='setTarget($event)')
+        option(*ngFor='let t of targets; let i = index', [ngValue]='i') {{targetLabel(t, i)}}
+    .flex-grow-1
+    .summary.me-3(*ngIf='scan && !scanning')
+        span(*ngIf='count("removed")', data-tone='error') {{count('removed')}} removed
+        span(*ngIf='count("removed-in-target")', data-tone='error') {{count('removed-in-target')}} gone in {{formatVersion(target)}}
+        span(*ngIf='count("deprecated")', data-tone='warning') {{count('deprecated')}} deprecated
+    button.btn.btn-secondary.btn-sm((click)='rescan()', [disabled]='scanning')
+        i.fas.fa-sync-alt.me-1([class.fa-spin]='scanning')
+        span(translate) Rescan
+
+.alert.alert-danger.m-3(*ngIf='error') {{error}}
+.m-3(*ngIf='scanning && !scan', translate) Scanning
+
+.alert.alert-warning.mx-3.mt-3.mb-0(*ngIf='helmBlocked')
+    strong(translate) helm upgrade will fail
+    |  for the releases below whose stored manifest has a removed API: Helm reads the previous manifest first, and the cluster
+    |  no longer knows its kinds. Rewrite the stored manifest with the
+    a.ms-1((click)='openMapKubeApis()', title='github.com/helm/helm-mapkubeapis') helm mapkubeapis
+    |  plugin, then upgrade with a chart that uses the replacements.
+
+.table-wrap(*ngIf='scan')
+    table.table.table-sm(*ngIf='findings.length')
+        thead
+            tr
+                th(translate) Status
+                th(translate) API
+                th.wide(translate) Object
+                th(translate) Found in
+                th(translate) Replace with
+                th(translate) When
+        tbody
+            tr(
+                *ngFor='let f of findings',
+                [class.clickable]='!!f.link',
+                (click)='select(f)',
+                [title]='f.link ? "Show it" : ""'
+            )
+                td([attr.data-tone]='statusTone(f)') {{statusLabel(f)}}
+                td.mono {{f.apiVersion}} {{f.source === 'requested' ? '' : f.kind}}
+                td.wide([title]='objectLabel(f)') {{objectLabel(f)}}
+                td([title]='sourceLabel(f)') {{sourceLabel(f)}}
+                td.mono
+                    span(*ngIf='f.replacement') {{f.replacement}}
+                    span.muted(*ngIf='!f.replacement && f.source !== "requested"', translate) nothing, it's gone
+                td.muted {{f.detail}}
+    .empty(*ngIf='!findings.length')
+        i.fas.fa-check-circle.me-2
+        span No deprecated or removed APIs in use{{targetIndex ? ' for ' + formatVersion(target) : ''}}
+
+    .notes
+        div(translate) Looked in: the current manifests of Helm releases, the last-applied-configuration kubectl apply leaves on objects, and the deprecated APIs the API server has had requests for since it started.
+        div(translate) The objects themselves can't tell: the API server converts them to whatever version they are read with.
+        div(*ngIf='scan.unavailable.length') Not readable with these credentials: {{scan.unavailable.join(', ')}}.

@@ -38,6 +38,17 @@ pre.yaml(*ngIf='tab === "yaml"') {{yaml}}
             th {{p[0]}}
             td([attr.data-tone]='p[0] === "Status" ? helmTone(p[1]) : null') {{p[1]}}
 
+    section(*ngIf='apiFindings.length')
+        h6(translate) Old APIs in the manifest
+        .api-finding(*ngFor='let f of apiFindings')
+            .d-flex
+                strong.me-2([attr.data-tone]='f.status === "removed" ? "error" : "warning"') {{f.apiVersion}} {{f.kind}}
+                span.muted {{f.name}}
+            .muted.small
+                span {{f.detail}}
+                span(*ngIf='f.replacement') ; use {{f.replacement}}
+        .small.mt-1(*ngIf='upgradeBlocked', translate) helm upgrade fails while the stored manifest has removed APIs; helm mapkubeapis rewrites it.
+
     section
         h6
             span(translate) History

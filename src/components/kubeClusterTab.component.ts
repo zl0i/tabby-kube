@@ -14,6 +14,8 @@ import {
 } from 'tabby-core'
 import { KubeContainerMode, KubeObject, KubeProfile, KubeTarget } from '../api'
 import { KubeCluster, toYaml } from '../kube/cluster'
+import { helmApiColumn, loadApiContext } from '../kube/apiScan'
+import { ApiCheckContext } from '../kube/deprecations'
 import { CUSTOM_SECTION, listCustomKinds } from '../kube/discovery'
 import { fetchNodeUsage, fetchPodUsage, hasUsage, Usage, usageColumns } from '../kube/metrics'
 import { canForward, forwardablePorts, PortForwarder } from '../kube/portForward'
@@ -23,6 +25,7 @@ import { hasWorkloadLogs } from '../kube/related'
 import { containerProfile, nodeShellProfile, workloadLogsProfile } from '../profiles'
 import { PortForwardsService } from '../services/portForwards.service'
 import { YamlEditor } from '../yamlEditor'
+import { ApiFindingLink } from './kubeDeprecations.component'
 import { ContainerRequest, DetailsAction } from './kubeDetails.component'
 import { PortForwardChoice, PortForwardModalComponent } from './portForwardModal.component'
 
@@ -34,6 +37,8 @@ const AGE_REFRESH_INTERVAL = 5000
 const USAGE_INTERVAL = 15000
 /** The state's kind for the port forwards view */
 const PORT_FORWARDS_VIEW = 'port-forwards'
+/** The state's kind for the deprecated APIs view */
+const DEPRECATIONS_VIEW = 'deprecated-apis'
 
 export interface KubeClusterTabState {
     kind: string
@@ -84,7 +89,9 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     /** Empty means all namespaces */
     namespace = ''
     kind: KubeResourceKind = RESOURCE_KINDS[0]
-    view: 'resources' | 'port-forwards' = 'resources'
+    view: 'resources' | 'port-forwards' | 'deprecations' = 'resources'
+    /** What the cluster serves, to judge API versions in use by; null when it couldn't be found out */
+    apiContext: ApiCheckContext|null = null
     sections: Section[] = []
     customGroups: CustomGroup[] = []
     columns: KubeColumn[] = []
@@ -135,6 +142,8 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         this.kind = findKind(this.state?.kind ?? '') ?? RESOURCE_KINDS[0]
         if (this.state?.kind === PORT_FORWARDS_VIEW) {
             this.view = 'port-forwards'
+        } else if (this.state?.kind === DEPRECATIONS_VIEW) {
+            this.view = 'deprecations'
         } else if (this.state?.kind && this.kind.id !== this.state.kind) {
             this.pendingKindId = this.state.kind
         }
@@ -168,12 +177,17 @@ export class KubeClusterTabComponent extends BaseTabComponent {
             const cluster = new KubeCluster(this.profile.options)
             this.version = await cluster.getVersion()
             this.namespace = this.state?.namespace ?? (this.profile.options.namespace || cluster.contextNamespace)
-            const [namespaces, customKinds, nodeUsage] = await Promise.all([
+            const [namespaces, customKinds, nodeUsage, apiContext] = await Promise.all([
                 cluster.listNamespaces(),
                 listCustomKinds(cluster.kc),
                 fetchNodeUsage(cluster.kc).catch(() => null),
+                loadApiContext(cluster.kc, this.version).catch(e => {
+                    console.warn('Could not find out the cluster\'s APIs', e)
+                    return null
+                }),
             ])
             this.namespaces = namespaces
+            this.apiContext = apiContext
             this.setCustomKinds(customKinds)
             this.metricsSupported = !!nodeUsage
             this.cluster = cluster
@@ -232,6 +246,11 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         this.watch()
     }
 
+    showDeprecations (): void {
+        this.view = 'deprecations'
+        this.selectedUid = null
+    }
+
     showPortForwards (): void {
         this.view = 'port-forwards'
         this.selectedUid = null
@@ -249,6 +268,10 @@ export class KubeClusterTabComponent extends BaseTabComponent {
             return
         }
         const columns = [...this.kind.columns]
+        if (this.kind.id === 'helmreleases' && this.apiContext) {
+            const status = columns.findIndex(x => x.title === 'Status')
+            columns.splice(status + 1, 0, helmApiColumn(() => this.apiContext))
+        }
         if (this.metricsSupported && hasUsage(this.kind.id)) {
             const age = columns.findIndex(x => x.title === 'Age')
             columns.splice(age < 0 ? columns.length : age, 0, ...usageColumns(this.kind.id, () => this.usage))
@@ -365,8 +388,20 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         if (this.revealSelected && this.selected) {
             this.revealSelected = false
             // After the rows are rendered
-            setTimeout(() => this.tableWrap?.nativeElement.querySelector('tr.selected')?.scrollIntoView({ block: 'center' }))
+            setTimeout(() => this.scrollToSelected())
         }
+    }
+
+    /** Centers the selected row in the table; scrollIntoView would scroll the whole tab along */
+    private scrollToSelected (): void {
+        const wrap = this.tableWrap?.nativeElement
+        const row = wrap?.querySelector('tr.selected')
+        if (!wrap || !row) {
+            return
+        }
+        const rowBox = row.getBoundingClientRect()
+        const wrapBox = wrap.getBoundingClientRect()
+        wrap.scrollTop += rowBox.top - wrapBox.top - (wrap.clientHeight - rowBox.height) / 2
     }
 
     trackRow (_index: number, row: Row): string {
@@ -414,12 +449,24 @@ export class KubeClusterTabComponent extends BaseTabComponent {
 
     /** Shows a pod among all pods, from the pods of a workload, service or node */
     goToPod (pod: KubeObject): void {
-        this.selectKind(findKind('pods')!)
-        if (this.namespace && this.namespace !== pod.metadata.namespace) {
-            this.selectNamespace(pod.metadata.namespace!)
+        this.goToObject(findKind('pods')!, pod.metadata.namespace, pod.metadata.uid)
+    }
+
+    /** Shows something found with an old API: a Helm release, or an object kubectl applied */
+    openFinding (link: ApiFindingLink): void {
+        const kind = findKind(link.kindId)
+        if (kind) {
+            this.goToObject(kind, link.namespace, link.uid)
+        }
+    }
+
+    private goToObject (kind: KubeResourceKind, namespace: string|undefined, uid: string): void {
+        this.selectKind(kind)
+        if (this.namespace && namespace && this.namespace !== namespace) {
+            this.selectNamespace(namespace)
         }
         this.filterText = ''
-        this.selectedUid = pod.metadata.uid
+        this.selectedUid = uid
         this.revealSelected = true
     }
 
@@ -473,6 +520,11 @@ export class KubeClusterTabComponent extends BaseTabComponent {
                 name: 'Port forwards',
                 group: 'Network',
                 callback: () => this.showPortForwards(),
+            },
+            {
+                name: 'Deprecated APIs',
+                group: 'Cluster',
+                callback: () => this.showDeprecations(),
             },
             ...this.customGroups.flatMap(group => group.kinds.map(kind => ({
                 name: kind.title,
@@ -677,7 +729,10 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         return {
             type: 'app:kube-tab',
             profile: this.profile,
-            state: { kind: this.view === 'port-forwards' ? PORT_FORWARDS_VIEW : this.kind.id, namespace: this.namespace } as KubeClusterTabState,
+            state: {
+                kind: { 'port-forwards': PORT_FORWARDS_VIEW, deprecations: DEPRECATIONS_VIEW, resources: this.kind.id }[this.view],
+                namespace: this.namespace,
+            } as KubeClusterTabState,
         }
     }
 

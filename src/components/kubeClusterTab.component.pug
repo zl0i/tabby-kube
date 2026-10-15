@@ -36,7 +36,7 @@
                 i.fas.fa-times
 
     .flex-grow-1
-    .count.me-2(*ngIf='cluster && !loading')
+    .count.me-2(*ngIf='cluster && !loading && view === "resources"')
         span(*ngIf='rows.length !== totalCount') {{rows.length}} of&nbsp;
         span {{totalCount}}
 
@@ -61,6 +61,12 @@
             )
                 span(translate) Port forwards
                 span.badge.bg-secondary.ms-2(*ngIf='portForwards.forwards.length') {{portForwards.forwards.length}}
+            a.kind(
+                *ngIf='section.title === "Cluster" && apiContext',
+                [class.active]='view === "deprecations"',
+                (click)='showDeprecations()'
+            )
+                span(translate) Deprecated APIs
 
         ng-container(*ngIf='customGroups.length')
             .section-title Custom resources
@@ -74,6 +80,9 @@
                         [class.active]='view === "resources" && k === kind',
                         (click)='selectKind(k)'
                     ) {{k.title}}
+
+    .content(*ngIf='view === "deprecations" && apiContext')
+        kube-deprecations([cluster]='cluster', [context]='apiContext', (open)='openFinding($event)')
 
     .content(*ngIf='view === "port-forwards"')
         .table-wrap
@@ -140,6 +149,7 @@
             [cluster]='cluster',
             [kind]='kind',
             [obj]='selected',
+            [apiContext]='apiContext',
             (container)='onContainer($event)',
             (goToPod)='goToPod($event)',
             (action)='onAction(selected, $event)',

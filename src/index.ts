@@ -7,6 +7,7 @@ import TabbyTerminalModule from 'tabby-terminal'
 
 import { KubeCommandProvider } from './commands'
 import { KubeClusterTabComponent } from './components/kubeClusterTab.component'
+import { KubeDeprecationsComponent } from './components/kubeDeprecations.component'
 import { KubeDetailsComponent } from './components/kubeDetails.component'
 import { KubeProfileSettingsComponent } from './components/kubeProfileSettings.component'
 import { KubeTerminalTabComponent } from './components/kubeTerminalTab.component'
@@ -31,6 +32,7 @@ import { RecoveryProvider } from './recoveryProvider'
     ],
     declarations: [
         KubeClusterTabComponent,
+        KubeDeprecationsComponent,
         KubeDetailsComponent,
         KubeProfileSettingsComponent,
         KubeTerminalTabComponent,

@@ -15,6 +15,8 @@ import {
     describeRelease,
 } from '../kube/describe'
 import { chartLabel, decodeRelease, HelmRelease, helmHistorySelector, helmRevision, helmStatusTone } from '../kube/helm'
+import { releaseApiFindings } from '../kube/apiScan'
+import { ApiCheckContext, ApiFinding } from '../kube/deprecations'
 import { canForward } from '../kube/portForward'
 import { eventsQuery, hasWorkloadLogs, relatedPodsQuery } from '../kube/related'
 import { findKind, formatAge, KubeResourceKind, podContainers, podReady, podRestarts, podStatus, podTone, Tone } from '../kube/resources'
@@ -51,6 +53,7 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
     @Input() cluster: KubeCluster
     @Input() kind: KubeResourceKind
     @Input() obj: KubeObject
+    @Input() apiContext: ApiCheckContext|null = null
     @Output() container = new EventEmitter<ContainerRequest>()
     @Output() goToPod = new EventEmitter<KubeObject>()
     @Output() action = new EventEmitter<DetailsAction>()
@@ -63,6 +66,8 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
     valuesYaml = ''
     defaultsYaml: string|null = null
     history: KubeObject[] = []
+    /** Removed or deprecated APIs in the release's stored manifest */
+    apiFindings: ApiFinding[] = []
     properties: [string, string][] = []
     labels: [string, string][] = []
     annotations: [string, string][] = []
@@ -98,6 +103,7 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
         if (this.isHelm) {
             this.release = decodeRelease(this.obj)
             this.properties = this.release ? describeRelease(this.release) : []
+            this.apiFindings = this.apiContext ? releaseApiFindings(this.obj, this.apiContext) : []
             this.valuesYaml = this.release?.config && Object.keys(this.release.config).length ? dump(this.release.config, { lineWidth: -1 }) : ''
             return
         }
@@ -130,6 +136,11 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
     /** A Helm release's secret has nothing to show as such; the release has values and a manifest */
     get tabs (): DetailsTab[] {
         return this.isHelm ? ['overview', 'values', 'manifest'] : ['overview', 'yaml']
+    }
+
+    /** `helm upgrade` reads the stored manifest first, and fails on kinds the cluster no longer has */
+    get upgradeBlocked (): boolean {
+        return this.apiFindings.some(x => x.status === 'removed')
     }
 
     get hasWorkloadLogs (): boolean {

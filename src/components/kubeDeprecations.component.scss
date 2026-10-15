@@ -1,0 +1,104 @@
+:host {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+
+    [data-tone=ok] { color: var(--bs-success, #4caf50); }
+    [data-tone=warning] { color: var(--bs-warning, #ffc107); }
+    [data-tone=error] { color: var(--bs-danger, #f44336); }
+    .muted { opacity: .6; }
+
+    .toolbar {
+        display: flex;
+        align-items: center;
+        padding: 8px 15px;
+        border-bottom: 1px solid rgba(white, .1);
+        white-space: nowrap;
+    }
+
+    .version {
+        opacity: .7;
+    }
+
+    .target {
+        width: auto;
+    }
+
+    .summary span + span {
+        margin-left: 12px;
+    }
+
+    .table-wrap {
+        flex: 1 1 0;
+        overflow: auto;
+    }
+
+    table {
+        font-size: 13px;
+        margin: 0;
+        color: inherit;
+        --bs-table-bg: transparent;
+        --bs-table-color: inherit;
+
+        th {
+            font-weight: normal;
+            font-size: 12px;
+            white-space: nowrap;
+            padding: 6px 10px;
+        }
+
+        td {
+            white-space: nowrap;
+            padding: 4px 10px;
+            max-width: 340px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        th:first-child, td:first-child {
+            padding-left: 15px;
+        }
+
+        .wide {
+            width: 100%;
+            max-width: 0;
+            min-width: 180px;
+        }
+
+        .mono {
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        tr.clickable {
+            cursor: pointer;
+
+            &:hover td {
+                background: rgba(white, .05);
+            }
+        }
+    }
+
+    .alert a {
+        color: inherit;
+        font-family: monospace;
+    }
+
+    .empty {
+        padding: 30px 15px;
+        text-align: center;
+        color: var(--bs-success, #4caf50);
+    }
+
+    .notes {
+        padding: 15px;
+        font-size: 12px;
+        opacity: .6;
+
+        div + div {
+            margin-top: 4px;
+        }
+    }
+}

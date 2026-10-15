@@ -1,5 +1,6 @@
 import * as http from 'http'
 import * as https from 'https'
+import { createInterface } from 'readline'
 import { Readable } from 'stream'
 import { KubeConfig } from '@kubernetes/client-node'
 
@@ -16,6 +17,8 @@ export interface KubeRequestOptions {
     query?: Record<string, string|number|boolean|undefined>
     body?: unknown
     contentType?: string
+    /** JSON by default */
+    accept?: string
     signal?: AbortSignal
 }
 
@@ -62,7 +65,7 @@ export async function kubeRequest (kc: KubeConfig, method: KubeMethod, apiPath: 
     const requestOptions: https.RequestOptions = {
         method,
         headers: {
-            Accept: 'application/json',
+            Accept: options.accept ?? 'application/json',
             ...body !== undefined ? { 'Content-Type': options.contentType ?? 'application/json' } : {},
         },
     }
@@ -88,4 +91,16 @@ export async function kubeRequest (kc: KubeConfig, method: KubeMethod, apiPath: 
 export async function kubeJson<T> (kc: KubeConfig, method: KubeMethod, apiPath: string, options?: KubeRequestOptions): Promise<T> {
     const response = await kubeRequest(kc, method, apiPath, options)
     return JSON.parse(await readText(response)) as T
+}
+
+/** The lines of a text response that match, without holding the rest (the API server's metrics run to megabytes) */
+export async function kubeTextLines (kc: KubeConfig, apiPath: string, filter: (line: string) => boolean): Promise<string[]> {
+    const response = await kubeRequest(kc, 'GET', apiPath, { accept: 'text/plain' })
+    const lines: string[] = []
+    for await (const line of createInterface(response)) {
+        if (filter(line)) {
+            lines.push(line)
+        }
+    }
+    return lines
 }
