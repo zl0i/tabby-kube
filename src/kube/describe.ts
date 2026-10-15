@@ -1,4 +1,5 @@
 import { KubeObject } from '../api'
+import { HelmRelease } from './helm'
 import { decodeSecretValue } from './related'
 import { formatAge, KubeResourceKind, Tone } from './resources'
 
@@ -143,4 +144,19 @@ export function describeData (kind: KubeResourceKind, obj: KubeObject): DataEntr
         ]
     }
     return []
+}
+
+/** What `helm status` tells */
+export function describeRelease (release: HelmRelease): [string, string][] {
+    const when = (timestamp: string|undefined) => timestamp ? `${formatAge(timestamp)} ago (${new Date(timestamp).toLocaleString()})` : undefined
+    const properties: [string, string|undefined][] = [
+        ['Chart', `${release.chart.metadata.name} ${release.chart.metadata.version}`],
+        ['App version', release.chart.metadata.appVersion],
+        ['Status', release.info.status],
+        ['Revision', String(release.version)],
+        ['Updated', when(release.info.last_deployed)],
+        ['Installed', when(release.info.first_deployed)],
+        ['Description', release.info.description],
+    ]
+    return properties.filter((x): x is [string, string] => !!x[1])
 }

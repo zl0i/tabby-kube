@@ -1,11 +1,13 @@
 import { marker as _ } from '@biesbjerg/ngx-translate-extract-marker'
 import { Injectable } from '@angular/core'
 import { NewTabParameters, PartialProfile, ProfileProvider, TranslateService } from 'tabby-core'
-import { KubeProfile, KubeTarget, KubeTerminalMode, KubeTerminalProfile } from './api'
+import { KubeContainerMode, KubeProfile, KubeTarget, KubeTerminalProfile } from './api'
 import { KubeClusterTabComponent } from './components/kubeClusterTab.component'
 import { KubeProfileSettingsComponent } from './components/kubeProfileSettings.component'
 import { KubeTerminalTabComponent } from './components/kubeTerminalTab.component'
 import { listContexts } from './kube/config'
+import { DEFAULT_NODE_SHELL_IMAGE, DEFAULT_NODE_SHELL_NAMESPACE } from './kube/nodeShell'
+import { KubeResourceKind } from './kube/resources'
 
 export const CLUSTER_ICON = 'fas fa-dharmachakra'
 
@@ -20,6 +22,8 @@ export class KubeProfilesService extends ProfileProvider<KubeProfile> {
             kubeconfig: '',
             context: '',
             namespace: '',
+            nodeShellImage: DEFAULT_NODE_SHELL_IMAGE,
+            nodeShellNamespace: DEFAULT_NODE_SHELL_NAMESPACE,
         },
     }
 
@@ -81,6 +85,10 @@ export class KubeTerminalProfilesService extends ProfileProvider<KubeTerminalPro
             command: '',
             tailLines: 500,
             previous: false,
+            workloadKind: '',
+            workloadName: '',
+            node: '',
+            image: DEFAULT_NODE_SHELL_IMAGE,
         },
         clearServiceMessagesOnConnect: false,
     }
@@ -97,7 +105,15 @@ export class KubeTerminalProfilesService extends ProfileProvider<KubeTerminalPro
     }
 
     getDescription (profile: PartialProfile<KubeTerminalProfile>): string {
-        return `${profile.options?.namespace}/${profile.options?.pod}/${profile.options?.container}`
+        const options = profile.options
+        switch (options?.mode) {
+            case 'workload-logs':
+                return `${options.namespace}/${options.workloadName}`
+            case 'node-shell':
+                return `node ${options.node}`
+            default:
+                return `${options?.namespace}/${options?.pod}/${options?.container}`
+        }
     }
 }
 
@@ -106,7 +122,7 @@ export function containerProfile (
     namespace: string,
     pod: string,
     container: string,
-    mode: KubeTerminalMode,
+    mode: KubeContainerMode,
     extra: { previous?: boolean } = {},
 ): PartialProfile<KubeTerminalProfile> {
     return {
@@ -114,5 +130,25 @@ export function containerProfile (
         name: `${mode === 'logs' ? 'logs: ' : ''}${pod}/${container}`,
         icon: mode === 'logs' ? 'fas fa-stream' : 'fas fa-terminal',
         options: { ...target, namespace, pod, container, mode, ...extra },
+    }
+}
+
+/** The logs of all the pods of a workload or service, in one tab */
+export function workloadLogsProfile (target: KubeTarget, kind: KubeResourceKind, namespace: string, name: string): PartialProfile<KubeTerminalProfile> {
+    return {
+        type: 'kube-terminal',
+        name: `logs: ${kind.kind.toLowerCase()}/${name}`,
+        icon: 'fas fa-stream',
+        // Fewer lines per container than for one, as there are many
+        options: { ...target, mode: 'workload-logs', namespace, workloadKind: kind.id, workloadName: name, tailLines: 100 },
+    }
+}
+
+export function nodeShellProfile (target: KubeTarget, node: string, image: string, namespace: string): PartialProfile<KubeTerminalProfile> {
+    return {
+        type: 'kube-terminal',
+        name: `node: ${node}`,
+        icon: 'fas fa-server',
+        options: { ...target, mode: 'node-shell', node, image, namespace },
     }
 }

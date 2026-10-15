@@ -27,3 +27,24 @@
                 placeholder='All namespaces',
                 [(ngModel)]='profile.options.namespace',
             )
+
+h4.mt-4(translate) Node shells
+.row
+    .col-6
+        .mb-3
+            label(translate) Image
+            input.form-control(
+                type='text',
+                placeholder='alpine:3.20',
+                [(ngModel)]='profile.options.nodeShellImage',
+            )
+            small.text-muted(translate) Any image with nsenter, which Alpine's and BusyBox's have
+    .col-6
+        .mb-3
+            label(translate) Namespace
+            input.form-control(
+                type='text',
+                placeholder='kube-system',
+                [(ngModel)]='profile.options.nodeShellNamespace',
+            )
+            small.text-muted(translate) Has to allow privileged pods

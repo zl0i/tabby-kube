@@ -1,8 +1,10 @@
-// Read-only checks against a real cluster: nothing here creates, changes or deletes objects.
+// Checks against a real cluster. They only read, except those that need KUBE_TEST_WRITE, for a throwaway cluster.
 //   KUBE_TEST_CONTEXT     kubeconfig context to use (the tests are skipped without it)
 //   KUBE_TEST_KUBECONFIG  kubeconfig file; the default one otherwise
 //   KUBE_TEST_EXEC        namespace/pod/container with a shell, to run `echo` in; the exec test is skipped without it
 //   KUBE_TEST_METRICS     set when the cluster has metrics-server, to require usage figures
+//   KUBE_TEST_WRITE       set to also run what creates objects (deleted after): a node shell's privileged pod,
+//                         and a config map and a deployment to edit, scale, restart and delete
 import './fakeTabby'
 import { after, describe, test } from 'node:test'
 import * as assert from 'node:assert/strict'
@@ -10,13 +12,14 @@ import * as http from 'node:http'
 import { KubeTerminalProfileOptions } from '../src/api'
 import { KubeCluster } from '../src/kube/cluster'
 import { listCustomKinds } from '../src/kube/discovery'
-import { KubeApiError } from '../src/kube/http'
+import { KubeApiError, kubeJson } from '../src/kube/http'
 import { fetchNodeUsage, fetchPodUsage } from '../src/kube/metrics'
+import { decodeRelease, latestRevisions } from '../src/kube/helm'
 import { eventsQuery, relatedPodsQuery } from '../src/kube/related'
 import { PortForwarder } from '../src/kube/portForward'
 import { findKind, podStatus } from '../src/kube/resources'
 import { ResourceWatcher } from '../src/kube/watcher'
-import { KubeLogsSession, KubeShellSession } from '../src/sessions'
+import { KubeLogsSession, KubeNodeShellSession, KubeShellSession, KubeWorkloadLogsSession } from '../src/sessions'
 
 /** What the stand-in BaseSession of fakeTabby.ts collects */
 interface FakeBaseSession {
@@ -25,6 +28,7 @@ interface FakeBaseSession {
 }
 
 const context = process.env.KUBE_TEST_CONTEXT
+const logger = { info: () => null, warn: () => null, error: () => null, debug: () => null, log: () => null } as any
 const target = { kubeconfig: process.env.KUBE_TEST_KUBECONFIG ?? '', context: context ?? '' }
 
 function waitFor (condition: () => boolean, timeout = 15000): Promise<void> {
@@ -44,7 +48,10 @@ function waitFor (condition: () => boolean, timeout = 15000): Promise<void> {
 }
 
 function terminalOptions (namespace: string, pod: string, container: string, extra: Partial<KubeTerminalProfileOptions> = {}): KubeTerminalProfileOptions {
-    return { ...target, mode: 'shell', namespace, pod, container, command: '', tailLines: 5, previous: false, ...extra }
+    return {
+        ...target, mode: 'shell', namespace, pod, container, command: '', tailLines: 5, previous: false,
+        workloadKind: '', workloadName: '', node: '', image: 'alpine:3.20', ...extra,
+    }
 }
 
 describe('a real cluster', { skip: !context && 'KUBE_TEST_CONTEXT is not set' }, () => {
@@ -89,7 +96,7 @@ describe('a real cluster', { skip: !context && 'KUBE_TEST_CONTEXT is not set' },
         const pod = watch.items.find(x => podStatus(x) === 'Running')!
         watch.stop()
 
-        const session = new KubeLogsSession(null as any, cluster.kc, terminalOptions(
+        const session = new KubeLogsSession(logger, cluster.kc, terminalOptions(
             'kube-system', pod.metadata.name, pod.spec.containers[0].name, { mode: 'logs', tailLines: 3 },
         ))
         const fake = session as unknown as FakeBaseSession
@@ -108,14 +115,14 @@ describe('a real cluster', { skip: !context && 'KUBE_TEST_CONTEXT is not set' },
         const pod = watch.items.find(x => podStatus(x) === 'Running')!
         watch.stop()
 
-        const session = new KubeShellSession(null as any, cluster.kc, terminalOptions('kube-system', pod.metadata.name, 'no-such-container'))
+        const session = new KubeShellSession(logger, cluster.kc, terminalOptions('kube-system', pod.metadata.name, 'no-such-container'))
         await assert.rejects(session.start({ columns: 80, rows: 24 }), /has no container "no-such-container"/)
     })
 
     const exec = process.env.KUBE_TEST_EXEC?.split('/')
     test('runs a command in a container', { skip: !exec && 'KUBE_TEST_EXEC is not set' }, async () => {
         const [namespace, pod, container] = exec!
-        const session = new KubeShellSession(null as any, cluster.kc, terminalOptions(namespace, pod, container, { command: 'echo tabby-kube-ok' }))
+        const session = new KubeShellSession(logger, cluster.kc, terminalOptions(namespace, pod, container, { command: 'echo tabby-kube-ok' }))
         const fake = session as unknown as FakeBaseSession
         await session.start({ columns: 80, rows: 24 })
         await fake.ended
@@ -241,5 +248,105 @@ describe('a real cluster', { skip: !context && 'KUBE_TEST_CONTEXT is not set' },
         })))
         assert.ok(about.items.length > 0)
         assert.ok(about.items.every(x => x.involvedObject.uid === event.involvedObject.uid))
+    })
+
+    test('follows the logs of all the pods of a deployment, each line marked with its pod', async () => {
+        const session = new KubeWorkloadLogsSession(logger, cluster.kc, terminalOptions('kube-system', '', '', {
+            mode: 'workload-logs', workloadKind: 'deployments', workloadName: 'coredns', tailLines: 3,
+        }))
+        const fake = session as unknown as FakeBaseSession
+        await session.start()
+        try {
+            await waitFor(() => /\+ [\w-]+/.test(fake.printed) && fake.printed.split('\r\n').length > 2)
+            // "+ <pod>" when a container joins, then its lines behind its colored short name
+            const pod = /\+ ([\w-]+)/.exec(fake.printed)![1]
+            assert.ok(fake.printed.includes(`\x1b[36m${pod}\x1b[0m `), fake.printed.slice(0, 300))
+        } finally {
+            session.kill()
+        }
+    })
+
+    test('reads the Helm releases of the cluster, if any', async () => {
+        const kind = findKind('helmreleases')!
+        const secrets = await loaded(cluster.watch(kind, { namespace: null, labelSelector: kind.labelSelector }))
+        const releases = latestRevisions(secrets.items)
+        for (const secret of releases.slice(0, 10)) {
+            const release = decodeRelease(secret)
+            assert.ok(release, secret.metadata.name)
+            assert.equal(release.name, secret.metadata.labels?.name)
+            assert.equal(String(release.version), secret.metadata.labels?.version)
+            assert.ok(release.chart.metadata.name)
+        }
+        const names = releases.map(x => `${x.metadata.namespace}/${x.metadata.labels?.name}`)
+        assert.equal(new Set(names).size, names.length)
+    })
+
+    test('opens a shell on a node, and deletes its pod after', { skip: !process.env.KUBE_TEST_WRITE && 'KUBE_TEST_WRITE is not set' }, async () => {
+        const nodes = await loaded(cluster.watch(findKind('nodes')!, null))
+        const node = nodes.items[0].metadata.name
+        const session = new KubeNodeShellSession(logger, cluster.kc, terminalOptions('kube-system', '', '', {
+            mode: 'node-shell', node, image: 'alpine:3.20',
+        }))
+        const fake = session as unknown as FakeBaseSession
+        await session.start({ columns: 120, rows: 30 })
+        const podName = (session as any).podName as string
+        assert.ok(podName.startsWith('node-shell-'))
+
+        // In the node's namespaces, the hostname is the node's
+        session.write(Buffer.from('echo "on-$(hostname)"; exit\r'))
+        await fake.ended
+        assert.match(fake.printed, /on-\S+/)
+        // The pod goes as the session ends
+        const gone = async () => {
+            const pod = await cluster.read(findKind('pods')!, { metadata: { name: podName, namespace: 'kube-system', uid: '' } }).catch(e => e)
+            return pod instanceof KubeApiError ? pod.statusCode === 404 : !!pod.metadata.deletionTimestamp
+        }
+        const deadline = Date.now() + 30000
+        while (!await gone()) {
+            assert.ok(Date.now() < deadline, 'the node shell pod is still there')
+            await new Promise(resolve => setTimeout(resolve, 500))
+        }
+    })
+
+    test('replaces, scales, restarts and deletes objects', { skip: !process.env.KUBE_TEST_WRITE && 'KUBE_TEST_WRITE is not set' }, async () => {
+        const name = `tabby-kube-test-${Date.now()}`
+        const configMaps = findKind('configmaps')!
+        const deployments = findKind('deployments')!
+        const ref = { metadata: { name, namespace: 'default', uid: '' } }
+        await kubeJson(cluster.kc, 'POST', '/api/v1/namespaces/default/configmaps', {
+            body: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name }, data: { a: '1' } },
+        })
+        await kubeJson(cluster.kc, 'POST', '/apis/apps/v1/namespaces/default/deployments', {
+            body: {
+                apiVersion: 'apps/v1',
+                kind: 'Deployment',
+                metadata: { name },
+                spec: {
+                    replicas: 1,
+                    selector: { matchLabels: { app: name } },
+                    template: {
+                        metadata: { labels: { app: name } },
+                        spec: { containers: [{ name: 'main', image: 'busybox:1.36', command: ['sleep', '3600'] }] },
+                    },
+                },
+            },
+        })
+        try {
+            const configMap = await cluster.read(configMaps, ref)
+            await cluster.replace(configMaps, { ...configMap, data: { a: '2' } })
+            assert.deepEqual((await cluster.read(configMaps, ref)).data, { a: '2' })
+            // The version read before the change above is stale now
+            await assert.rejects(cluster.replace(configMaps, { ...configMap, data: { a: '3' } }), (e: KubeApiError) => e.statusCode === 409)
+
+            const deployment = await cluster.read(deployments, ref)
+            await cluster.scale(deployments, deployment, 2)
+            assert.equal((await cluster.read(deployments, ref)).spec.replicas, 2)
+            await cluster.restart(deployments, deployment)
+            assert.ok((await cluster.read(deployments, ref)).spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt'])
+        } finally {
+            await cluster.delete(configMaps, ref)
+            await cluster.delete(deployments, ref)
+        }
+        await assert.rejects(cluster.read(configMaps, ref), (e: KubeApiError) => e.statusCode === 404)
     })
 })

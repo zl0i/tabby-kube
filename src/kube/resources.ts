@@ -1,4 +1,5 @@
 import { KubeObject } from '../api'
+import { chartLabel, decodeRelease, HELM_CURRENT_SELECTOR, helmRevision, helmStatusTone, latestRevisions } from './helm'
 
 export type Tone = 'ok' | 'warning' | 'error' | 'muted'
 
@@ -30,8 +31,18 @@ export interface KubeResourceKind {
     scalable?: boolean
     /** Objects with generated names (events) leave the name column out */
     hideName?: boolean
+    /** Shown first instead of the object's name, for objects that stand for something else */
+    nameColumn?: KubeColumn
+    /** What one object is called in the details, when not its kind */
+    objectTitle?: string
     /** Initial sort; the name otherwise */
     defaultSort?: { column: string, descending: boolean }
+    /** Lists only the objects with these labels (?labelSelector=) */
+    labelSelector?: string
+    /** Picks the objects to show among those listed */
+    transform?: (objects: KubeObject[]) => KubeObject[]
+    /** Shown only: no editing or deleting (its objects stand for something else, as Helm releases) */
+    readOnly?: boolean
 }
 
 // Formatting
@@ -389,6 +400,32 @@ export const RESOURCE_KINDS: KubeResourceKind[] = [
                 title: 'Last seen',
                 value: obj => formatAge(eventTime(obj)),
                 sortValue: obj => -timestampValue(eventTime(obj)),
+            },
+        ],
+    },
+    {
+        // Helm releases, read from the secrets Helm keeps them in
+        id: 'helmreleases', title: 'Releases', section: 'Helm',
+        apiVersion: 'v1', kind: 'Secret', plural: 'secrets', namespaced: true,
+        readOnly: true,
+        labelSelector: HELM_CURRENT_SELECTOR,
+        transform: latestRevisions,
+        nameColumn: { title: 'Release', value: obj => obj.metadata.labels?.name ?? '', wide: true },
+        objectTitle: 'Helm release',
+        defaultSort: { column: 'Release', descending: false },
+        columns: [
+            { title: 'Revision', value: obj => String(helmRevision(obj)), sortValue: helmRevision },
+            { title: 'Chart', value: obj => chartLabel(decodeRelease(obj)) },
+            { title: 'App version', value: obj => decodeRelease(obj)?.chart.metadata.appVersion ?? '' },
+            {
+                title: 'Status',
+                value: obj => obj.metadata.labels?.status ?? '',
+                tone: obj => helmStatusTone(obj.metadata.labels?.status),
+            },
+            {
+                title: 'Updated',
+                value: obj => formatAge(decodeRelease(obj)?.info.last_deployed ?? obj.metadata.creationTimestamp),
+                sortValue: obj => -timestampValue(decodeRelease(obj)?.info.last_deployed ?? obj.metadata.creationTimestamp),
             },
         ],
     },

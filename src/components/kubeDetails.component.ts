@@ -1,7 +1,8 @@
 import { Component, EventEmitter, Input, NgZone, OnChanges, OnDestroy, Output } from '@angular/core'
+import { dump } from 'js-yaml'
 import { auditTime } from 'rxjs'
 import { PlatformService } from 'tabby-core'
-import { KubeObject, KubeTerminalMode } from '../api'
+import { KubeObject, KubeContainerMode } from '../api'
 import { KubeCluster, toYaml } from '../kube/cluster'
 import {
     ConditionInfo,
@@ -11,9 +12,11 @@ import {
     describeContainers,
     describeData,
     describeProperties,
+    describeRelease,
 } from '../kube/describe'
+import { chartLabel, decodeRelease, HelmRelease, helmHistorySelector, helmRevision, helmStatusTone } from '../kube/helm'
 import { canForward } from '../kube/portForward'
-import { eventsQuery, relatedPodsQuery } from '../kube/related'
+import { eventsQuery, hasWorkloadLogs, relatedPodsQuery } from '../kube/related'
 import { findKind, formatAge, KubeResourceKind, podContainers, podReady, podRestarts, podStatus, podTone, Tone } from '../kube/resources'
 import { ResourceWatcher } from '../kube/watcher'
 
@@ -22,11 +25,13 @@ const UPDATE_INTERVAL = 250
 export interface ContainerRequest {
     pod: KubeObject
     container: string
-    mode: KubeTerminalMode
+    mode: KubeContainerMode
     previous: boolean
 }
 
-export type DetailsAction = 'edit' | 'forward' | 'restart' | 'scale' | 'delete'
+export type DetailsAction = 'logs' | 'node-shell' | 'edit' | 'forward' | 'restart' | 'scale' | 'delete'
+
+export type DetailsTab = 'overview' | 'yaml' | 'values' | 'manifest'
 
 function eventTime (event: KubeObject): string|undefined {
     return event.lastTimestamp ?? event.eventTime ?? event.metadata.creationTimestamp
@@ -51,8 +56,13 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
     @Output() action = new EventEmitter<DetailsAction>()
     @Output() closed = new EventEmitter<void>()
 
-    tab: 'overview' | 'yaml' = 'overview'
+    tab: DetailsTab = 'overview'
     yaml = ''
+    /** Of a Helm release: the release, its values as YAML, its revisions (newest first) */
+    release: HelmRelease|null = null
+    valuesYaml = ''
+    defaultsYaml: string|null = null
+    history: KubeObject[] = []
     properties: [string, string][] = []
     labels: [string, string][] = []
     annotations: [string, string][] = []
@@ -66,6 +76,7 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
     pods: KubeObject[]|null = null
     private eventsWatcher: ResourceWatcher|null = null
     private podsWatcher: ResourceWatcher|null = null
+    private historyWatcher: ResourceWatcher|null = null
     private watchedUid: string|null = null
 
     constructor (
@@ -78,7 +89,17 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
             this.watchedUid = this.obj.metadata.uid
             this.revealed.clear()
             this.showAnnotations = false
+            this.defaultsYaml = null
+            if (!this.tabs.includes(this.tab)) {
+                this.tab = 'overview'
+            }
             this.watchRelated()
+        }
+        if (this.isHelm) {
+            this.release = decodeRelease(this.obj)
+            this.properties = this.release ? describeRelease(this.release) : []
+            this.valuesYaml = this.release?.config && Object.keys(this.release.config).length ? dump(this.release.config, { lineWidth: -1 }) : ''
+            return
         }
         this.yaml = toYaml(this.kind, this.obj)
         this.properties = describeProperties(this.kind, this.obj)
@@ -97,6 +118,24 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
         return this.kind.id === 'pods'
     }
 
+    /** A Helm release by its own name rather than its secret's */
+    get title (): string {
+        return this.kind.nameColumn?.value(this.obj) ?? this.obj.metadata.name
+    }
+
+    get isHelm (): boolean {
+        return this.kind.id === 'helmreleases'
+    }
+
+    /** A Helm release's secret has nothing to show as such; the release has values and a manifest */
+    get tabs (): DetailsTab[] {
+        return this.isHelm ? ['overview', 'values', 'manifest'] : ['overview', 'yaml']
+    }
+
+    get hasWorkloadLogs (): boolean {
+        return hasWorkloadLogs(this.kind)
+    }
+
     get canForward (): boolean {
         return canForward(this.kind)
     }
@@ -105,8 +144,17 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
         this.stopWatching()
         this.events = []
         this.pods = null
+        this.history = []
         const update = () => this.zone.run(() => this.updateRelated())
 
+        if (this.isHelm) {
+            this.historyWatcher = this.cluster.watch(this.kind, {
+                namespace: this.obj.metadata.namespace!,
+                labelSelector: helmHistorySelector(this.obj.metadata.labels?.name ?? ''),
+            })
+            this.historyWatcher.changed$.pipe(auditTime(UPDATE_INTERVAL)).subscribe(update)
+            return
+        }
         this.eventsWatcher = this.cluster.watch(findKind('events')!, eventsQuery(this.kind, this.obj))
         this.eventsWatcher.changed$.pipe(auditTime(UPDATE_INTERVAL)).subscribe(update)
         const podsQuery = relatedPodsQuery(this.kind, this.obj)
@@ -123,11 +171,16 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
         if (this.podsWatcher) {
             this.pods = this.podsWatcher.items.sort((a, b) => a.metadata.name.localeCompare(b.metadata.name))
         }
+        if (this.historyWatcher) {
+            this.history = this.historyWatcher.items.sort((a, b) => helmRevision(b) - helmRevision(a))
+        }
     }
 
     private stopWatching (): void {
         this.eventsWatcher?.stop()
         this.podsWatcher?.stop()
+        this.historyWatcher?.stop()
+        this.historyWatcher = null
         this.eventsWatcher = null
         this.podsWatcher = null
     }
@@ -158,14 +211,35 @@ export class KubeDetailsComponent implements OnChanges, OnDestroy {
         return podRestarts(pod)
     }
 
+    revisionOf (secret: KubeObject): number {
+        return helmRevision(secret)
+    }
+
+    /** A revision's release, decoded once per version of its secret */
+    revisionRelease (secret: KubeObject): HelmRelease|null {
+        return decodeRelease(secret)
+    }
+
+    chartLabel (release: HelmRelease|null): string {
+        return chartLabel(release)
+    }
+
+    helmTone (status: string|undefined): Tone|null {
+        return helmStatusTone(status)
+    }
+
+    toggleDefaults (): void {
+        this.defaultsYaml = this.defaultsYaml === null ? dump(this.release?.chart.values ?? {}, { lineWidth: -1 }) : null
+    }
+
     // Actions
 
-    openContainer (container: string, mode: KubeTerminalMode, previous = false): void {
+    openContainer (container: string, mode: KubeContainerMode, previous = false): void {
         this.container.emit({ pod: this.obj, container, mode, previous })
     }
 
     /** Shells and logs of a related pod go to its first container */
-    openPod (pod: KubeObject, mode: KubeTerminalMode): void {
+    openPod (pod: KubeObject, mode: KubeContainerMode): void {
         this.container.emit({ pod, container: podContainers(pod)[0], mode, previous: false })
     }
 

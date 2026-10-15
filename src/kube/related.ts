@@ -60,6 +60,11 @@ export function relatedPodsQuery (kind: KubeResourceKind, obj: KubeObject): Kube
     }
 }
 
+/** Kinds whose pods' logs can be followed together: workloads and the services in front of them */
+export function hasWorkloadLogs (kind: KubeResourceKind): boolean {
+    return ['deployments', 'statefulsets', 'daemonsets', 'jobs', 'services'].includes(kind.id)
+}
+
 /** The events about an object, as `kubectl describe` lists them */
 export function eventsQuery (kind: KubeResourceKind, obj: KubeObject): KubeQuery {
     if (obj.metadata.namespace) {

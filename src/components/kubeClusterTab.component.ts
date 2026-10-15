@@ -12,14 +12,15 @@ import {
     SelectorOption,
     SelectorService,
 } from 'tabby-core'
-import { KubeObject, KubeProfile, KubeTerminalMode } from '../api'
+import { KubeContainerMode, KubeObject, KubeProfile, KubeTarget } from '../api'
 import { KubeCluster, toYaml } from '../kube/cluster'
 import { CUSTOM_SECTION, listCustomKinds } from '../kube/discovery'
 import { fetchNodeUsage, fetchPodUsage, hasUsage, Usage, usageColumns } from '../kube/metrics'
 import { canForward, forwardablePorts, PortForwarder } from '../kube/portForward'
 import { findKind, KubeColumn, KubeResourceKind, podContainers, podRestarts, RESOURCE_KINDS, Tone } from '../kube/resources'
 import { ResourceWatcher } from '../kube/watcher'
-import { containerProfile } from '../profiles'
+import { hasWorkloadLogs } from '../kube/related'
+import { containerProfile, nodeShellProfile, workloadLogsProfile } from '../profiles'
 import { PortForwardsService } from '../services/portForwards.service'
 import { YamlEditor } from '../yamlEditor'
 import { ContainerRequest, DetailsAction } from './kubeDetails.component'
@@ -253,13 +254,16 @@ export class KubeClusterTabComponent extends BaseTabComponent {
             columns.splice(age < 0 ? columns.length : age, 0, ...usageColumns(this.kind.id, () => this.usage))
         }
         this.columns = [
-            ...this.kind.hideName ? [] : [NAME_COLUMN],
+            ...this.kind.hideName ? [] : [this.kind.nameColumn ?? NAME_COLUMN],
             ...this.kind.namespaced && !this.namespace ? [NAMESPACE_COLUMN] : [],
             ...columns,
         ]
         this.rows = []
         this.totalCount = 0
-        this.watcher = this.cluster.watch(this.kind, this.kind.namespaced ? this.namespace || null : null)
+        this.watcher = this.cluster.watch(this.kind, {
+            namespace: this.kind.namespaced ? this.namespace || null : null,
+            labelSelector: this.kind.labelSelector,
+        })
         // Watch events arrive from network streams, outside of Angular's change detection
         this.watcher.changed$.pipe(auditTime(UPDATE_INTERVAL)).subscribe(() => this.zone.run(() => this.updateRows()))
         this.pollUsage()
@@ -333,7 +337,8 @@ export class KubeClusterTabComponent extends BaseTabComponent {
     }
 
     updateRows (): void {
-        const objects = this.watcher?.items ?? []
+        const listed = this.watcher?.items ?? []
+        const objects = this.kind.transform ? this.kind.transform(listed) : listed
         this.totalCount = objects.length
         const query = this.filterText.trim().toLowerCase()
         const sortIndex = Math.max(0, this.columns.findIndex(x => x.title === this.sortColumn))
@@ -387,9 +392,14 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         return podRestarts(pod) > 0
     }
 
-    openContainer (pod: KubeObject, container: string, mode: KubeTerminalMode, previous = false): void {
+    /** For terminal tabs: the context by name, so that they stay with this cluster when the current context changes */
+    private get terminalTarget (): KubeTarget {
+        return { kubeconfig: this.profile.options.kubeconfig, context: this.cluster!.contextName }
+    }
+
+    openContainer (pod: KubeObject, container: string, mode: KubeContainerMode, previous = false): void {
         this.profiles.openNewTabForProfile(containerProfile(
-            { kubeconfig: this.profile.options.kubeconfig, context: this.cluster!.contextName },
+            this.terminalTarget,
             pod.metadata.namespace!,
             pod.metadata.name,
             container,
@@ -413,8 +423,33 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         this.revealSelected = true
     }
 
+    hasWorkloadLogs (): boolean {
+        return hasWorkloadLogs(this.kind)
+    }
+
+    openWorkloadLogs (obj: KubeObject): void {
+        this.profiles.openNewTabForProfile(workloadLogsProfile(this.terminalTarget, this.kind, obj.metadata.namespace!, obj.metadata.name))
+    }
+
+    async openNodeShell (node: KubeObject): Promise<void> {
+        const { nodeShellImage, nodeShellNamespace } = this.profile.options
+        const confirmed = (await this.platform.showMessageBox({
+            type: 'warning',
+            message: `Open a shell on node ${node.metadata.name}?`,
+            detail: `This starts a privileged pod (${nodeShellImage}) in ${nodeShellNamespace} with full access to the node, and deletes it when the shell closes.\n\nContext: ${this.cluster?.contextName}`,
+            buttons: ['Open shell', 'Cancel'],
+            defaultId: 0,
+            cancelId: 1,
+        })).response === 0
+        if (confirmed) {
+            this.profiles.openNewTabForProfile(nodeShellProfile(this.terminalTarget, node.metadata.name, nodeShellImage, nodeShellNamespace))
+        }
+    }
+
     onAction (obj: KubeObject, action: DetailsAction): void {
         const actions: Record<DetailsAction, (x: KubeObject) => Promise<void>> = {
+            logs: async x => this.openWorkloadLogs(x),
+            'node-shell': x => this.openNodeShell(x),
             edit: x => this.editYaml(x),
             forward: x => this.portForward(x),
             restart: x => this.restart(x),
@@ -488,14 +523,17 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         event.preventDefault()
         this.selectedUid = row.uid
         this.updateRows()
-        this.platform.popupContextMenu(this.actionsFor(row.obj), event)
+        const items = this.actionsFor(row.obj)
+        if (items.length) {
+            this.platform.popupContextMenu(items, event)
+        }
     }
 
     private actionsFor (obj: KubeObject): MenuItemOptions[] {
         const items: MenuItemOptions[] = []
         if (this.isPods) {
             const containers = podContainers(obj)
-            const perContainer = (mode: KubeTerminalMode, previous = false): Partial<MenuItemOptions> => containers.length === 1
+            const perContainer = (mode: KubeContainerMode, previous = false): Partial<MenuItemOptions> => containers.length === 1
                 ? { click: () => this.openContainer(obj, containers[0], mode, previous) }
                 : { submenu: containers.map(c => ({ label: c, click: () => this.openContainer(obj, c, mode, previous) })) }
             items.push(
@@ -507,6 +545,12 @@ export class KubeClusterTabComponent extends BaseTabComponent {
             }
             items.push({ type: 'separator' })
         }
+        if (this.kind.id === 'nodes') {
+            items.push({ label: 'Shell', click: () => this.openNodeShell(obj) }, { type: 'separator' })
+        }
+        if (hasWorkloadLogs(this.kind)) {
+            items.push({ label: 'Logs of all pods', click: () => this.openWorkloadLogs(obj) })
+        }
         if (canForward(this.kind)) {
             items.push({ label: 'Port forward…', click: () => this.portForward(obj) })
         }
@@ -515,6 +559,9 @@ export class KubeClusterTabComponent extends BaseTabComponent {
         }
         if (this.kind.scalable) {
             items.push({ label: 'Scale…', click: () => this.scale(obj) })
+        }
+        if (this.kind.readOnly) {
+            return items
         }
         items.push(
             { label: 'Copy name', click: () => this.platform.setClipboard({ text: obj.metadata.name }) },

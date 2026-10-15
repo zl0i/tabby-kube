@@ -17,26 +17,45 @@ export interface KubeProfile extends Profile {
 export interface KubeProfileOptions extends KubeTarget {
     /** Namespace to open; empty means all namespaces */
     namespace: string
+    /** Node shells: the image of the pod that enters the node, which needs nsenter */
+    nodeShellImage: string
+    /** Node shells: the namespace their pods run in, which has to allow privileged pods */
+    nodeShellNamespace: string
 }
 
-export type KubeTerminalMode = 'shell' | 'logs'
+/** Of one container: a shell, or its logs */
+export type KubeContainerMode = 'shell' | 'logs'
 
-/** A shell in a container or its logs, opened in a terminal tab */
+/**
+ * - `shell`, `logs`: of one container
+ * - `workload-logs`: of every container of the pods a workload or service selects, as they come and go
+ * - `node-shell`: a shell on a node, through a privileged pod deleted when the shell ends
+ */
+export type KubeTerminalMode = KubeContainerMode | 'workload-logs' | 'node-shell'
+
+/** A shell or logs, opened in a terminal tab */
 export interface KubeTerminalProfile extends ConnectableTerminalProfile {
     options: KubeTerminalProfileOptions
 }
 
 export interface KubeTerminalProfileOptions extends KubeTarget {
     mode: KubeTerminalMode
+    /** The pod's namespace; for node shells, where their pods run */
     namespace: string
     pod: string
     container: string
     /** Shell mode: the command to run. Empty means bash where the container has it, sh otherwise */
     command: string
-    /** Logs mode: how many of the last lines to show before following */
+    /** Logs modes: how many of the last lines to show before following, per container */
     tailLines: number
     /** Logs mode: logs of the previous, terminated instance of the container */
     previous: boolean
+    /** Workload logs: the kind (its id) and the name of the object whose pods log */
+    workloadKind: string
+    workloadName: string
+    /** Node shell: the node, and the image of the pod that enters it */
+    node: string
+    image: string
 }
 
 /** The fields every Kubernetes object has, as far as the browser cares */

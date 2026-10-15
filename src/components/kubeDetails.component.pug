@@ -1,8 +1,8 @@
 .details-header
     .title
-        strong {{obj.metadata.name}}
+        strong {{title}}
         .subtitle
-            span {{kind.kind}}
+            span {{kind.objectTitle ?? kind.kind}}
             span(*ngIf='obj.metadata.namespace')  · {{obj.metadata.namespace}}
     button.btn.btn-link.btn-sm((click)='closed.emit()', title='Close')
         i.fas.fa-times
@@ -10,9 +10,15 @@
 .toolbar
     .tabs
         a([class.active]='tab === "overview"', (click)='tab = "overview"', translate) Overview
-        a([class.active]='tab === "yaml"', (click)='tab = "yaml"') YAML
+        a(*ngIf='!isHelm', [class.active]='tab === "yaml"', (click)='tab = "yaml"') YAML
+        a(*ngIf='isHelm', [class.active]='tab === "values"', (click)='tab = "values"', translate) Values
+        a(*ngIf='isHelm', [class.active]='tab === "manifest"', (click)='tab = "manifest"', translate) Manifest
     .flex-grow-1
-    button.btn.btn-link.btn-sm((click)='action.emit("edit")', title='Edit YAML')
+    button.btn.btn-link.btn-sm(*ngIf='hasWorkloadLogs', (click)='action.emit("logs")', title='Logs of all pods')
+        i.fas.fa-stream
+    button.btn.btn-link.btn-sm(*ngIf='kind.id === "nodes"', (click)='action.emit("node-shell")', title='Shell on the node')
+        i.fas.fa-terminal
+    button.btn.btn-link.btn-sm(*ngIf='!kind.readOnly', (click)='action.emit("edit")', title='Edit YAML')
         i.fas.fa-pen
     button.btn.btn-link.btn-sm(*ngIf='canForward', (click)='action.emit("forward")', title='Port forward')
         i.fas.fa-plug
@@ -20,12 +26,47 @@
         i.fas.fa-redo
     button.btn.btn-link.btn-sm(*ngIf='kind.scalable', (click)='action.emit("scale")', title='Scale')
         i.fas.fa-arrows-alt-v
-    button.btn.btn-link.btn-sm.text-danger((click)='action.emit("delete")', title='Delete')
+    button.btn.btn-link.btn-sm.text-danger(*ngIf='!kind.readOnly', (click)='action.emit("delete")', title='Delete')
         i.fas.fa-trash-alt
 
 pre.yaml(*ngIf='tab === "yaml"') {{yaml}}
 
-.body(*ngIf='tab === "overview"')
+.body(*ngIf='isHelm && tab === "overview"')
+    .text-muted(*ngIf='!release', translate) The release can't be read
+    table.properties(*ngIf='properties.length')
+        tr(*ngFor='let p of properties')
+            th {{p[0]}}
+            td([attr.data-tone]='p[0] === "Status" ? helmTone(p[1]) : null') {{p[1]}}
+
+    section
+        h6
+            span(translate) History
+            span.count  {{history.length}}
+        table.list
+            tr(*ngFor='let revision of history', [title]='revisionRelease(revision)?.info?.description ?? ""')
+                td.revision {{revisionOf(revision)}}
+                td.status([attr.data-tone]='helmTone(revision.metadata.labels?.status)') {{revision.metadata.labels?.status}}
+                td([title]='chartLabel(revisionRelease(revision))') {{chartLabel(revisionRelease(revision))}}
+                td.age.muted {{age(revisionRelease(revision)?.info?.last_deployed ?? revision.metadata.creationTimestamp)}}
+
+    section(*ngIf='release?.info?.notes')
+        h6(translate) Notes
+        pre.notes {{release?.info?.notes}}
+
+.body(*ngIf='isHelm && tab === "values"')
+    h6(translate) Values given
+    pre.notes(*ngIf='valuesYaml') {{valuesYaml}}
+    .text-muted.small(*ngIf='!valuesYaml', translate) None: the chart's defaults apply
+    section
+        h6
+            a.toggle((click)='toggleDefaults()')
+                i.fas.fa-fw([class.fa-caret-right]='defaultsYaml === null', [class.fa-caret-down]='defaultsYaml !== null')
+                span(translate) Chart defaults
+        pre.notes(*ngIf='defaultsYaml !== null') {{defaultsYaml}}
+
+pre.yaml(*ngIf='isHelm && tab === "manifest"') {{release?.manifest}}
+
+.body(*ngIf='!isHelm && tab === "overview"')
     table.properties(*ngIf='properties.length')
         tr(*ngFor='let p of properties')
             th {{p[0]}}
